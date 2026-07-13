@@ -1,0 +1,49 @@
+diff --git a/Source/JavaScriptCore/runtime/IntlDateTimeFormat.cpp b/Source/JavaScriptCore/runtime/IntlDateTimeFormat.cpp
+index c0dbca4a063c..e1834209a2fe 100644
+--- a/Source/JavaScriptCore/runtime/IntlDateTimeFormat.cpp
++++ b/Source/JavaScriptCore/runtime/IntlDateTimeFormat.cpp
+@@ -26,6 +26,7 @@
+ #include "config.h"
+ #include "IntlDateTimeFormat.h"
+ 
++#include "CottontailWindowsSystemICU.h"
+ #include "ISO8601.h"
+ #include "IntlCache.h"
+ #include "IntlObjectInlines.h"
+@@ -1492,7 +1493,11 @@ static std::unique_ptr<UFormattedDateInterval, ICUDeleter<udtitvfmt_closeResult>
+         if (U_FAILURE(status))
+             return nullptr;
+ 
++#if OS(WINDOWS)
++        cottontailFormatCalendarRange(&dateIntervalFormat, startCalendar.get(), endCalendar.get(), result.get(), &status);
++#else
+         udtitvfmt_formatCalendarToResult(&dateIntervalFormat, startCalendar.get(), endCalendar.get(), result.get(), &status);
++#endif
+     }
+ #else
+     UNUSED_PARAM(dateFormat);
+diff --git a/Source/JavaScriptCore/runtime/IntlPluralRules.cpp b/Source/JavaScriptCore/runtime/IntlPluralRules.cpp
+index 37c3e7043c0c..5e6fbbe415c4 100644
+--- a/Source/JavaScriptCore/runtime/IntlPluralRules.cpp
++++ b/Source/JavaScriptCore/runtime/IntlPluralRules.cpp
+@@ -26,6 +26,7 @@
+ #include "config.h"
+ #include "IntlPluralRules.h"
+ 
++#include "CottontailWindowsSystemICU.h"
+ #include "IntlNumberFormatInlines.h"
+ #include "IntlObjectInlines.h"
+ #include "JSCInlines.h"
+@@ -267,7 +268,12 @@ JSValue IntlPluralRules::selectRange(JSGlobalObject* globalObject, double start,
+         return throwTypeError(globalObject, scope, "failed to select range of plural value"_s);
+ 
+     Vector<char16_t, 32> buffer;
++#if OS(WINDOWS)
++    auto locale = m_locale.utf8();
++    status = callBufferProducingFunction(cottontailSelectPluralRange, m_pluralRules.get(), m_numberFormatter.get(), locale.data(), start, end, buffer);
++#else
+     status = callBufferProducingFunction(uplrules_selectForRange, m_pluralRules.get(), range.get(), buffer);
++#endif
+     if (U_FAILURE(status))
+         return throwTypeError(globalObject, scope, "failed to select plural value"_s);
+     return jsString(vm, String(WTF::move(buffer)));

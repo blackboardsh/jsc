@@ -14,8 +14,8 @@ permissions:
 
 env:
   LLVM_VERSION: 21.1.8
-  WINDOWS_ARM64_PATCH_COMMIT: 2bff772c7eeb205bb66618d4faf7f712fdfb626c
-  WINDOWS_ARM64_PATCH_SHA256: b9ce3682840873eaf5d04a9880e8812b938076c454ab58dce2925669fc74eae9
+  ICU_ABI_FLOOR: "70"
+  ICU_SOURCE_SHA256: 8d205428c17bf13bb535300669ed28b338a157b1c01ae66d31d0d3e2d47c3fd5
   WINDOWS_JSCONLY_PATCH_COMMIT: 2d96c99b553946b611978b26dd1f83a8b68be10a
   WINDOWS_JSCONLY_PATCH_SHA256: c5a909008db01b72d7af7a2204dc6223fa24f9588aa7841370a21f4381cec767
   WINDOWS_MSVC_ATTRIBUTE_PATCH_COMMIT: 87d57a3fc39c408dd484cd3341a9448f3be2208d
@@ -142,12 +142,18 @@ jobs:
     env:
       WEBKIT_OUTPUTDIR: ${{ github.workspace }}/WebKitBuild
       ARTIFACT_NAME: ${{ matrix.artifact }}
+      ICU_PREFIX: ${{ github.workspace }}/icu-system
 
     defaults:
       run:
         working-directory: WebKit
 
     steps:
+      - name: Check out build scripts
+        uses: actions/checkout@v4
+        with:
+          path: BuildScripts
+
       - name: Check out upstream WebKit tag without test suites
         uses: actions/checkout@v4
         with:
@@ -177,21 +183,41 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             clang-18 \
-            libicu-dev \
             lld-18 \
             ninja-build \
             python3 \
             ruby
 
+      - name: Prepare ICU 70 headers and system bridge
+        working-directory: BuildScripts
+        env:
+          CC: ${{ matrix.cc }}
+        run: bash scripts/prepare-system-icu.sh "$ICU_PREFIX" "${{ matrix.os }}"
+
       - name: Build JSCOnly
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
+          CFLAGS: -DU_DISABLE_RENAMING=1
+          CXXFLAGS: -DU_DISABLE_RENAMING=1
         run: |
+          if [[ "${{ matrix.os }}" == linux ]]; then
+            icu_data="$ICU_PREFIX/lib/libicudata.a"
+            icu_i18n="$ICU_PREFIX/lib/libicui18n.a"
+            icu_uc="$ICU_PREFIX/lib/libicuuc.a"
+          else
+            icu_system_library="$(xcrun --show-sdk-path)/usr/lib/libicucore.tbd"
+            test -s "$icu_system_library"
+            icu_data="$icu_system_library"
+            icu_i18n="$icu_system_library"
+            icu_uc="$icu_system_library"
+            platform_cmake_args="-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
+          fi
+
           Tools/Scripts/build-jsc \
             --jsc-only \
             --release \
-            --cmakeargs="-DENABLE_STATIC_JSC=ON"
+            --cmakeargs="-DENABLE_STATIC_JSC=ON ${platform_cmake_args:-} -DICU_INCLUDE_DIR=$ICU_PREFIX/include -DICU_DATA_LIBRARY_RELEASE=$icu_data -DICU_I18N_LIBRARY_RELEASE=$icu_i18n -DICU_UC_LIBRARY_RELEASE=$icu_uc"
 
       - name: Smoke test jsc
         run: |
@@ -202,9 +228,23 @@ jobs:
             exit 1
           fi
 
-          "$jsc_binary" -e 'if (6 * 7 !== 42) throw new Error("JSC smoke test failed")'
+          "$jsc_binary" -e 'const number = new Intl.NumberFormat("fr-FR", { useGrouping: false, minimumFractionDigits: 1 }); if (number.format(1.5) !== "1,5") throw new Error("system ICU number formatting failed"); if ("Stra\u00dfe".toLocaleUpperCase("de-DE") !== "STRASSE") throw new Error("system ICU case mapping failed"); if ("e\u0301".normalize("NFC") !== "\u00e9") throw new Error("Unicode normalization failed")'
+          jsc_build_dir=$(cd "$(dirname "$jsc_binary")/.." && pwd)
+
+          if [[ "${{ matrix.os }}" == linux ]]; then
+            if ldd "$jsc_binary" | grep -q 'libicu'; then
+              echo "jsc has a direct versioned ICU dependency; the bridge was bypassed" >&2
+              ldd "$jsc_binary"
+              exit 1
+            fi
+            if nm -u "$jsc_build_dir/lib/libJavaScriptCore.a" | grep -E ' U u[a-zA-Z0-9_]+_[0-9]+$'; then
+              echo "JavaScriptCore contains version-renamed ICU references" >&2
+              exit 1
+            fi
+          fi
+
           echo "JSC_BINARY=$jsc_binary" >> "$GITHUB_ENV"
-          echo "JSC_BUILD_DIR=$(cd "$(dirname "$jsc_binary")/.." && pwd)" >> "$GITHUB_ENV"
+          echo "JSC_BUILD_DIR=$jsc_build_dir" >> "$GITHUB_ENV"
 
       - name: Package build products
         run: |
@@ -220,6 +260,11 @@ jobs:
           find "$JSC_BUILD_DIR/lib" -maxdepth 1 -type f \
             \( -name '*.a' -o -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) \
             -exec cp {} "$package_dir/lib/" \;
+
+          if [[ "${{ matrix.os }}" == linux ]]; then
+            cp "$ICU_PREFIX/lib/libcottontail_icu.a" "$package_dir/lib/"
+          fi
+          cp "$ICU_PREFIX/SYSTEM_ICU_USAGE" "$package_dir/"
 
           cp "$JSC_BUILD_DIR/cmakeconfig.h" "$package_dir/include/"
           cp -R "$JSC_BUILD_DIR/JavaScriptCore/Headers/JavaScriptCore/." \
@@ -260,22 +305,27 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-  windows-arm64:
-    name: Windows arm64
+  windows-x64:
+    name: Windows x64
     needs: resolve
-    runs-on: windows-11-arm
+    runs-on: windows-2025
     timeout-minutes: 180
 
     env:
       WEBKIT_OUTPUTDIR: ${{ github.workspace }}\WebKitBuild
-      ARTIFACT_NAME: cottontail-jsc-windows-arm64
-      VCPKG_DEFAULT_TRIPLET: arm64-windows-static
+      ARTIFACT_NAME: cottontail-jsc-windows-amd64
+      ICU_PREFIX: ${{ github.workspace }}\icu-system
 
     defaults:
       run:
         working-directory: WebKit
 
     steps:
+      - name: Check out build scripts
+        uses: actions/checkout@v4
+        with:
+          path: BuildScripts
+
       - name: Check out upstream WebKit tag without test suites
         uses: actions/checkout@v4
         with:
@@ -290,35 +340,6 @@ jobs:
             !LayoutTests/
             !ManualTests/
             !WebDriverTests/
-
-      - name: Backport upstream Windows ARM64 support when needed
-        shell: pwsh
-        run: |
-          $patchPath = Join-Path $env:RUNNER_TEMP 'webkit-windows-arm64.patch'
-          $patchUri = "https://github.com/WebKit/WebKit/commit/$env:WINDOWS_ARM64_PATCH_COMMIT.patch"
-          Invoke-WebRequest -Uri $patchUri -OutFile $patchPath
-
-          $actualHash = (Get-FileHash $patchPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $env:WINDOWS_ARM64_PATCH_SHA256) {
-            throw "Windows ARM64 patch checksum mismatch: $actualHash"
-          }
-
-          git apply --reverse --check $patchPath 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            'The selected WebKit tag already contains Windows ARM64 support.'
-            'WINDOWS_ARM64_PATCH_APPLIED=false' >> $env:GITHUB_ENV
-            exit 0
-          }
-
-          git apply --check $patchPath
-          if ($LASTEXITCODE -ne 0) {
-            throw "Upstream Windows ARM64 patch does not apply to this WebKit tag"
-          }
-          git apply $patchPath
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to apply upstream Windows ARM64 support patch"
-          }
-          'WINDOWS_ARM64_PATCH_APPLIED=true' >> $env:GITHUB_ENV
 
       - name: Backport upstream Windows JSCOnly fixes when needed
         shell: pwsh
@@ -389,25 +410,73 @@ jobs:
           $patchApplied = $compilerPatchNeeded -or $segmentedVectorPatchNeeded
           "WINDOWS_MSVC_ATTRIBUTE_PATCH_APPLIED=$($patchApplied.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
 
+      - name: Add Windows system ICU compatibility
+        shell: pwsh
+        run: |
+          $patch = '../BuildScripts/patches/windows-system-icu.patch'
+          git apply --check $patch
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Windows system ICU compatibility patch does not apply to this WebKit tag'
+          }
+          git apply $patch
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to apply the Windows system ICU compatibility patch'
+          }
+
+          Copy-Item '../BuildScripts/bridge/windows-system-icu.h' 'Source/JavaScriptCore/runtime/CottontailWindowsSystemICU.h'
+
       - name: Install Windows build dependencies
         shell: pwsh
         run: |
           choco install strawberryperl ninja -y --no-progress
 
-          $llvmInstaller = Join-Path $env:RUNNER_TEMP "LLVM-$env:LLVM_VERSION-woa64.exe"
-          $llvmUri = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-woa64.exe"
+          $llvmInstaller = Join-Path $env:RUNNER_TEMP "LLVM-$env:LLVM_VERSION-win64.exe"
+          $llvmUri = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe"
           Invoke-WebRequest -Uri $llvmUri -OutFile $llvmInstaller
           $process = Start-Process -FilePath $llvmInstaller -ArgumentList '/S', '/D=C:\LLVM' -Wait -PassThru
           if ($process.ExitCode -ne 0) {
             throw "LLVM installer failed with exit code $($process.ExitCode)"
           }
 
-      - name: Build JSCOnly
+      - name: Prepare ICU 70 headers
+        shell: pwsh
+        working-directory: BuildScripts
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'icu4c-70_1-src.tgz'
+          $sourceDir = Join-Path $env:RUNNER_TEMP 'icu4c-70_1-src'
+          $uri = 'https://github.com/unicode-org/icu/releases/download/release-70-1/icu4c-70_1-src.tgz'
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+
+          $actualHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:ICU_SOURCE_SHA256) {
+            throw "ICU source checksum mismatch: $actualHash"
+          }
+
+          Remove-Item $env:ICU_PREFIX -Recurse -Force -ErrorAction Ignore
+          Remove-Item $sourceDir -Recurse -Force -ErrorAction Ignore
+          New-Item -ItemType Directory -Force -Path "$env:ICU_PREFIX\include\unicode", $sourceDir | Out-Null
+          tar -xzf $archive -C $sourceDir --strip-components=1
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to extract ICU 70 headers'
+          }
+
+          Copy-Item "$sourceDir\source\common\unicode\*" "$env:ICU_PREFIX\include\unicode\" -Recurse -Force
+          Copy-Item "$sourceDir\source\i18n\unicode\*" "$env:ICU_PREFIX\include\unicode\" -Recurse -Force
+          @(
+            'Cottontail JavaScriptCore uses the operating system ICU data.'
+            'Windows applications must link the Windows SDK icu.lib.'
+            'Windows 11 provides the combined system ICU C API in icu.dll.'
+          ) | Set-Content "$env:ICU_PREFIX\SYSTEM_ICU_USAGE"
+
+      - name: Build JSCOnly against Windows system ICU
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VSINSTALL=%%i"
-          call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -arch=arm64 -host_arch=arm64
+          call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
           set "PATH=C:\ProgramData\chocolatey\bin;C:\Strawberry\perl\bin;%PATH%"
+          set "SYSTEM_ICU_LIB=%WindowsSdkDir%Lib\%WindowsSDKVersion%um\x64\icu.lib"
+          echo Windows SDK ICU: "%SYSTEM_ICU_LIB%"
+          if not exist "%SYSTEM_ICU_LIB%" exit /b 1
           cmake -S . -B "%WEBKIT_OUTPUTDIR%\Release" -G Ninja ^
             -DPORT=JSCOnly ^
             -DCMAKE_BUILD_TYPE=Release ^
@@ -415,16 +484,14 @@ jobs:
             -DENABLE_STATIC_JSC=ON ^
             -DCMAKE_C_COMPILER=C:/LLVM/bin/clang-cl.exe ^
             -DCMAKE_CXX_COMPILER=C:/LLVM/bin/clang-cl.exe ^
-            -DCMAKE_C_FLAGS=/DU_STATIC_IMPLEMENTATION ^
-            -DCMAKE_CXX_FLAGS=/DU_STATIC_IMPLEMENTATION ^
+            -DCMAKE_C_FLAGS=/DU_DISABLE_RENAMING=1 ^
+            -DCMAKE_CXX_FLAGS=/DU_DISABLE_RENAMING=1 ^
             -DCMAKE_LINKER=C:/LLVM/bin/lld-link.exe ^
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
-            -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" ^
-            -DVCPKG_TARGET_TRIPLET=%VCPKG_DEFAULT_TRIPLET% ^
-            -DICU_INCLUDE_DIR="%WEBKIT_OUTPUTDIR%/Release/vcpkg_installed/%VCPKG_DEFAULT_TRIPLET%/include" ^
-            -DICU_DATA_LIBRARY_RELEASE="%WEBKIT_OUTPUTDIR%/Release/vcpkg_installed/%VCPKG_DEFAULT_TRIPLET%/lib/sicudt.lib" ^
-            -DICU_I18N_LIBRARY_RELEASE="%WEBKIT_OUTPUTDIR%/Release/vcpkg_installed/%VCPKG_DEFAULT_TRIPLET%/lib/sicuin.lib" ^
-            -DICU_UC_LIBRARY_RELEASE="%WEBKIT_OUTPUTDIR%/Release/vcpkg_installed/%VCPKG_DEFAULT_TRIPLET%/lib/sicuuc.lib"
+            -DICU_INCLUDE_DIR="%ICU_PREFIX%/include" ^
+            -DICU_DATA_LIBRARY_RELEASE="%SYSTEM_ICU_LIB%" ^
+            -DICU_I18N_LIBRARY_RELEASE="%SYSTEM_ICU_LIB%" ^
+            -DICU_UC_LIBRARY_RELEASE="%SYSTEM_ICU_LIB%"
           if errorlevel 1 exit /b %errorlevel%
 
           cmake --build "%WEBKIT_OUTPUTDIR%\Release" --target jsc --parallel
@@ -440,7 +507,7 @@ jobs:
             throw "Could not find jsc.exe under $env:WEBKIT_OUTPUTDIR"
           }
 
-          & $jsc.FullName -e 'if (6 * 7 !== 42) throw new Error("JSC smoke test failed")'
+          & $jsc.FullName -e 'const number = new Intl.NumberFormat("fr-FR", { useGrouping: false, minimumFractionDigits: 1 }); if (number.format(1.5) !== "1,5") throw new Error("system ICU number formatting failed"); if (new Intl.PluralRules("sl").selectRange(1, 2) !== "two") throw new Error("system ICU plural-range compatibility failed"); const historic = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).formatRange(new Date("1000-01-01T00:00:00.000Z"), new Date("1000-01-02T00:00:00.000Z")); if (!historic) throw new Error("system ICU date-range compatibility failed"); if ("Stra\u00dfe".toLocaleUpperCase("de-DE") !== "STRASSE") throw new Error("system ICU case mapping failed"); if ("e\u0301".normalize("NFC") !== "\u00e9") throw new Error("Unicode normalization failed")'
           if ($LASTEXITCODE -ne 0) {
             throw "JSC smoke test failed with exit code $LASTEXITCODE"
           }
@@ -453,7 +520,6 @@ jobs:
             "$packageDir\include\JavaScriptCore"
             "$packageDir\include\wtf"
             "$packageDir\include\bmalloc"
-            "$packageDir\include\icu"
           )
           New-Item -ItemType Directory -Force -Path $packageDirectories | Out-Null
 
@@ -474,28 +540,17 @@ jobs:
               Copy-Item -Destination "$packageDir\include\JavaScriptCore\"
           }
 
-          $vcpkgInstalled = Join-Path $buildDir "vcpkg_installed\$env:VCPKG_DEFAULT_TRIPLET"
-          $icuLibraries = 'sicudt.lib', 'sicuin.lib', 'sicuuc.lib'
-          foreach ($library in $icuLibraries) {
-            $libraryPath = Join-Path "$vcpkgInstalled\lib" $library
-            if (-not (Test-Path $libraryPath)) {
-              throw "Missing static ICU library: $libraryPath"
-            }
-            Copy-Item $libraryPath "$packageDir\lib\"
-          }
-          Copy-Item "$vcpkgInstalled\include\unicode" "$packageDir\include\icu\" -Recurse
+          Copy-Item "$env:ICU_PREFIX\SYSTEM_ICU_USAGE" "$packageDir\"
 
           git rev-parse HEAD | Set-Content "$packageDir\WEBKIT_REVISION"
           $patches = @()
-          if ($env:WINDOWS_ARM64_PATCH_APPLIED -eq 'true') {
-            $patches += $env:WINDOWS_ARM64_PATCH_COMMIT
-          }
           if ($env:WINDOWS_JSCONLY_PATCH_APPLIED -eq 'true') {
             $patches += $env:WINDOWS_JSCONLY_PATCH_COMMIT
           }
           if ($env:WINDOWS_MSVC_ATTRIBUTE_PATCH_APPLIED -eq 'true') {
             $patches += "$env:WINDOWS_MSVC_ATTRIBUTE_PATCH_COMMIT (MSVC NO_UNIQUE_ADDRESS compatibility)"
           }
+          $patches += 'Cottontail Windows system ICU compatibility'
           if ($patches.Count) {
             $patches | Set-Content "$packageDir\WEBKIT_PATCHES"
           }
@@ -516,14 +571,14 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cottontail-jsc-windows-arm64
-          path: ${{ runner.temp }}\cottontail-jsc-windows-arm64.tar.gz
+          name: cottontail-jsc-windows-amd64
+          path: ${{ runner.temp }}\cottontail-jsc-windows-amd64.tar.gz
           if-no-files-found: error
           compression-level: 0
 
   release:
     name: Create GitHub Release
-    needs: [resolve, unix, windows-arm64]
+    needs: [resolve, unix, windows-x64]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -541,7 +596,7 @@ jobs:
             cottontail-jsc-macos-arm64.tar.gz
             cottontail-jsc-linux-amd64.tar.gz
             cottontail-jsc-linux-arm64.tar.gz
-            cottontail-jsc-windows-arm64.tar.gz
+            cottontail-jsc-windows-amd64.tar.gz
           )
 
           for artifact in "${expected[@]}"; do
@@ -561,10 +616,16 @@ jobs:
           prerelease: true
           fail_on_unmatched_files: true
           body: |
-            JSCOnly static builds from an upstream WebKit release tag.
+            JSCOnly static builds from an upstream WebKit release tag. These builds
+            use each supported operating system's ICU libraries and data instead of
+            bundling ICU. JSC is compiled against the ICU 70 C ABI.
+
+            Linux artifacts include `libcottontail_icu.a`, which adapts JSC's
+            unversioned ICU calls to the installed ICU 70-or-newer symbol version.
+            Link it together with `libdl` when embedding JavaScriptCore.
 
             Upstream tag: ${{ needs.resolve.outputs.webkit_ref }}
             Upstream commit: ${{ needs.resolve.outputs.webkit_sha }}
 
-            Windows ARM64 backports upstream WebKit commit ${{ env.WINDOWS_ARM64_PATCH_COMMIT }} when the selected tag predates native Windows ARM64 support.
+            The Windows x64 build also runs on Windows 11 ARM through the operating system's x64 emulation.
           files: release-artifacts/*.tar.gz
