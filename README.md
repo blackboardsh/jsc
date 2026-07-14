@@ -21,3 +21,7 @@ Run the **Build JavaScriptCore (Cottontail)** workflow manually. With no input i
 selects the most recently created upstream `WebKit-*` tag; an exact tag can also
 be supplied. A prerelease is created only after every platform build and its
 Intl smoke test succeeds.
+
+Every artifact uses JSC's complete Baseline, DFG, FTL, and WebAssembly JIT
+stack. Production builds omit the sampling profiler, remote inspector, and API
+tests. There are no reduced-tier build profiles.
