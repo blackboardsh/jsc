@@ -66,15 +66,23 @@ fallback_prefix="$install_prefix/fallback"
 fallback_build="$source_root/build-cottontail-runtime"
 fallback_lib="$install_prefix/lib/cottontail-icu"
 configure_platform=Linux
+fallback_cc=${CC}
+fallback_cxx=${CXX}
 if [[ "$platform" == macos ]]; then
     configure_platform=MacOSX
+else
+    # ICU 70's autoconf namespace probe predates Clang 18 and reports a false
+    # negative on current Ubuntu runners. Its C ABI is compiler-independent;
+    # use the runner's GCC toolchain for the pinned fallback implementation.
+    fallback_cc=gcc
+    fallback_cxx=g++
 fi
 mkdir -p "$fallback_build" "$fallback_lib"
 
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
 (
     cd "$fallback_build"
-    CC="$CC" CXX="$CXX" "$source_root/source/runConfigureICU" "$configure_platform" \
+    CC="$fallback_cc" CXX="$fallback_cxx" "$source_root/source/runConfigureICU" "$configure_platform" \
         --prefix="$fallback_prefix" \
         --enable-static \
         --disable-shared \

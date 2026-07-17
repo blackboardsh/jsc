@@ -38,13 +38,19 @@ try {
     $reverse = @('apply', '--reverse', '--check')
     if ($include) { $reverse += "--include=$include" }
     $reverse += $patchPath
+    $ErrorActionPreference = 'Continue'
     & git @reverse 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    $reverseExitCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($reverseExitCode -ne 0) {
       $apply = @('apply')
       if ($include) { $apply += "--include=$include" }
       $apply += $patchPath
+      $ErrorActionPreference = 'Continue'
       & git @apply
-      if ($LASTEXITCODE -ne 0) { throw "WebKit patch failed: $commit" }
+      $applyExitCode = $LASTEXITCODE
+      $ErrorActionPreference = 'Stop'
+      if ($applyExitCode -ne 0) { throw "WebKit patch failed: $commit" }
     }
   }
 
