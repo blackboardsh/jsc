@@ -115,6 +115,7 @@ const manifestObject = {
     },
   },
   platforms: Object.fromEntries(artifacts.map((artifact) => [artifact.platform, {
+    ...(artifact.platform === 'windows-x64' ? { msvcRuntime: 'MT' } : {}),
     archive: {
       url: `${publicBaseUrl}/${snapshotKey(artifact.platform)}`,
       sha256: artifact.checksum,

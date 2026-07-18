@@ -111,7 +111,7 @@ $icuScriptContents = @(
   'echo "MSVC compiler: $(command -v cl)"'
   'echo "MSVC linker: $(command -v link)"'
   "cd '$buildUnix'"
-  "'$sourceUnix/source/runConfigureICU' MSYS/MSVC --build=x86_64-pc-mingw32 --host=x86_64-pc-mingw32 --prefix='$installUnix' --enable-static --disable-shared --with-data-packaging=archive --disable-tests --disable-samples --disable-extras --disable-icuio"
+  "CFLAGS=-MT CXXFLAGS=-MT '$sourceUnix/source/runConfigureICU' MSYS/MSVC --build=x86_64-pc-mingw32 --host=x86_64-pc-mingw32 --prefix='$installUnix' --enable-static --disable-shared --with-data-packaging=archive --disable-tests --disable-samples --disable-extras --disable-icuio"
   'make -j4'
   'make install'
 ) -join "`n"
@@ -130,6 +130,12 @@ if ($LASTEXITCODE -ne 0) {
   throw 'Static ICU build failed'
 }
 
+$icuDirectives = & 'C:\LLVM\bin\llvm-readobj.exe' --coff-directives (Join-Path $icuInstall 'lib/sicuuc.lib') 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the static ICU runtime-library directives' }
+if ($icuDirectives -match 'RuntimeLibrary=MD_DynamicRelease' -or $icuDirectives -notmatch 'RuntimeLibrary=MT_StaticRelease') {
+  throw 'Static ICU must use the MT_StaticRelease runtime library'
+}
+
 $fallback = Join-Path $icuPrefix 'lib/cottontail-icu'
 New-Item -ItemType Directory -Force -Path $fallback | Out-Null
 Copy-Item (Join-Path $icuInstall 'lib/sicudt.lib') (Join-Path $fallback 'icudata.lib')
@@ -140,6 +146,7 @@ Copy-Item (Join-Path $icuSource 'LICENSE') $fallback
 $dataHash = (Get-FileHash (Join-Path $fallback 'icudt70l.dat') -Algorithm SHA256).Hash.ToLowerInvariant()
 $fallbackMetadata = @{
   version = '70.1'; abi = 70; dataFile = 'icudt70l.dat';
+  msvcRuntime = 'MT';
   dataSha256 = $dataHash;
   source = 'https://github.com/unicode-org/icu/releases/download/release-70-1/icu4c-70_1-src.tgz';
   sourceSha256 = $icuHash
