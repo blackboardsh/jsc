@@ -16,17 +16,19 @@ export ICU_ABI_FLOOR=70
 export ICU_SOURCE_SHA256=8d205428c17bf13bb535300669ed28b338a157b1c01ae66d31d0d3e2d47c3fd5
 mkdir -p "$RUNNER_TEMP" "$root/release"
 
+jsc_cxxflags="-DU_DISABLE_RENAMING=1"
 if [[ "$TARGET_OS" == linux ]]; then
-    # Circle's LLVM 18 package does not discover the machine image's GCC
-    # library directory, even though build-essential provides libstdc++.
-    # Feed the native GCC runtime search path to Clang without changing the
-    # compiler or C++ ABI used by the published JSC archives.
-    libstdcxx=$(g++ -print-file-name=libstdc++.so)
-    if [[ ! -f "$libstdcxx" ]]; then
-        echo "g++ could not locate libstdc++.so: $libstdcxx" >&2
+    # Match Cottontail's Clang/GNU bridge setup. Circle's LLVM package does
+    # not reliably discover the machine image's GCC headers or libraries, so
+    # point Clang at the exact native GCC installation while retaining the
+    # libstdc++ ABI expected by the published JSC archives.
+    libgcc=$(g++ -print-file-name=libgcc.a)
+    if [[ ! -f "$libgcc" ]]; then
+        echo "g++ could not locate libgcc.a: $libgcc" >&2
         exit 1
     fi
-    export LIBRARY_PATH="$(dirname "$libstdcxx")${LIBRARY_PATH:+:$LIBRARY_PATH}"
+    gcc_install_dir=$(dirname "$libgcc")
+    jsc_cxxflags="--gcc-install-dir=$gcc_install_dir -stdlib=libstdc++ $jsc_cxxflags"
 fi
 
 bash "$root/scripts/checkout-webkit.sh"
@@ -47,7 +49,7 @@ else
     platform_cmake_args="-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
 fi
 
-CFLAGS=-DU_DISABLE_RENAMING=1 CXXFLAGS=-DU_DISABLE_RENAMING=1 \
+CFLAGS=-DU_DISABLE_RENAMING=1 CXXFLAGS="$jsc_cxxflags" \
 Tools/Scripts/build-jsc \
     --jsc-only \
     --release \
