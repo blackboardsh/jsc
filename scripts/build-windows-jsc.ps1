@@ -101,16 +101,34 @@ New-Item -ItemType Directory -Force -Path $icuBuild, $icuInstall | Out-Null
 $sourceUnix = (& $msysBash -lc "cygpath -u '$icuSource'").Trim()
 $buildUnix = (& $msysBash -lc "cygpath -u '$icuBuild'").Trim()
 $installUnix = (& $msysBash -lc "cygpath -u '$icuInstall'").Trim()
-$icuCommand = "cd '$buildUnix' && '$sourceUnix/source/runConfigureICU' MSYS/MSVC --prefix='$installUnix' --enable-static --disable-shared --with-data-packaging=archive --disable-tests --disable-samples --disable-extras --disable-icuio && make -j4 && make install"
+$icuScript = Join-Path $temp 'build-icu.sh'
+$icuScriptUnix = (& $msysBash -lc "cygpath -u '$icuScript'").Trim()
+$icuScriptContents = @(
+  '#!/usr/bin/env bash'
+  'set -euo pipefail'
+  'msvc_bin=$(cygpath -u "${VCToolsInstallDir}bin/Hostx64/x64")'
+  'export PATH="$msvc_bin:/usr/local/bin:/usr/bin:/bin"'
+  'echo "MSVC compiler: $(command -v cl)"'
+  'echo "MSVC linker: $(command -v link)"'
+  "cd '$buildUnix'"
+  "'$sourceUnix/source/runConfigureICU' MSYS/MSVC --prefix='$installUnix' --enable-static --disable-shared --with-data-packaging=archive --disable-tests --disable-samples --disable-extras --disable-icuio"
+  'make -j4'
+  'make install'
+) -join "`n"
+[IO.File]::WriteAllText($icuScript, "$icuScriptContents`n", $utf8)
 $icuCmd = Join-Path $temp 'build-icu.cmd'
 [IO.File]::WriteAllLines($icuCmd, @(
   '@echo off'
   "call `"$vsDevCmd`" -arch=x64 -host_arch=x64"
-  "`"$msysBash`" -lc `"$icuCommand`""
+  "`"$msysBash`" `"$icuScriptUnix`""
   'exit /b %errorlevel%'
 ), $utf8)
 & cmd.exe /c $icuCmd
-if ($LASTEXITCODE -ne 0) { throw 'Static ICU build failed' }
+if ($LASTEXITCODE -ne 0) {
+  $configLog = Join-Path $icuBuild 'config.log'
+  if (Test-Path $configLog) { Get-Content $configLog -Tail 200 }
+  throw 'Static ICU build failed'
+}
 
 $fallback = Join-Path $icuPrefix 'lib/cottontail-icu'
 New-Item -ItemType Directory -Force -Path $fallback | Out-Null
