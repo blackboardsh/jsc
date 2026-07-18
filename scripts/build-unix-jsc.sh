@@ -16,6 +16,19 @@ export ICU_ABI_FLOOR=70
 export ICU_SOURCE_SHA256=8d205428c17bf13bb535300669ed28b338a157b1c01ae66d31d0d3e2d47c3fd5
 mkdir -p "$RUNNER_TEMP" "$root/release"
 
+if [[ "$TARGET_OS" == linux ]]; then
+    # Circle's LLVM 18 package does not discover the machine image's GCC
+    # library directory, even though build-essential provides libstdc++.
+    # Feed the native GCC runtime search path to Clang without changing the
+    # compiler or C++ ABI used by the published JSC archives.
+    libstdcxx=$(g++ -print-file-name=libstdc++.so)
+    if [[ ! -f "$libstdcxx" ]]; then
+        echo "g++ could not locate libstdc++.so: $libstdcxx" >&2
+        exit 1
+    fi
+    export LIBRARY_PATH="$(dirname "$libstdcxx")${LIBRARY_PATH:+:$LIBRARY_PATH}"
+fi
+
 bash "$root/scripts/checkout-webkit.sh"
 bash "$root/scripts/prepare-system-icu.sh" "$ICU_PREFIX" "$TARGET_OS"
 

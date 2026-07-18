@@ -25,3 +25,10 @@ printf '%s\n' \
     '!/WebDriverTests/' \
     > "$checkout/.git/info/sparse-checkout"
 git -C "$checkout" checkout --detach "$sha"
+
+cmake_compatibility_patch="$root/patches/cmake-empty-linked-into.patch"
+if git -C "$checkout" apply --reverse --check "$cmake_compatibility_patch" 2>/dev/null; then
+    echo "WebKit CMake empty-property compatibility patch is already present"
+else
+    git -C "$checkout" apply "$cmake_compatibility_patch"
+fi

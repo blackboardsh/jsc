@@ -48,8 +48,15 @@ jobs:
       - run:
           name: Install dependencies
           command: |
-            brew install cmake node@24 ninja
-            echo 'export PATH="/opt/homebrew/opt/node@24/bin:$PATH"' >> "$BASH_ENV"
+            brew install node@24 ninja
+            cmake_archive="$HOME/cmake-3.31.8-macos-universal.tar.gz"
+            curl --fail --location --retry 3 \
+              --output "$cmake_archive" \
+              https://github.com/Kitware/CMake/releases/download/v3.31.8/cmake-3.31.8-macos-universal.tar.gz
+            echo 'd1449f969c54d5c00886d5b643340d493dfb3c81cb39ee29b35453395c11ebf7  '"$cmake_archive" | shasum -a 256 -c -
+            mkdir -p "$HOME/.local/cmake"
+            tar -xzf "$cmake_archive" --strip-components=1 -C "$HOME/.local/cmake"
+            echo 'export PATH="$HOME/.local/cmake/CMake.app/Contents/bin:/opt/homebrew/opt/node@24/bin:$PATH"' >> "$BASH_ENV"
       - run:
           name: Build and package JSC
           environment:

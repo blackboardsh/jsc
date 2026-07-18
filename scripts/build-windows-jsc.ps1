@@ -61,6 +61,19 @@ try {
   if ($contents.Contains($old)) { [IO.File]::WriteAllText($segmentedVector, $contents.Replace($old, $new)) }
   elseif (-not $contents.Contains($new)) { throw 'SegmentedVector compatibility declaration not found' }
 
+  $cmakeCompatibilityPatch = Join-Path $root 'patches/cmake-empty-linked-into.patch'
+  $ErrorActionPreference = 'Continue'
+  git apply --reverse --check $cmakeCompatibilityPatch 2>$null
+  $cmakePatchReverseExitCode = $LASTEXITCODE
+  $ErrorActionPreference = 'Stop'
+  if ($cmakePatchReverseExitCode -ne 0) {
+    $ErrorActionPreference = 'Continue'
+    git apply $cmakeCompatibilityPatch
+    $cmakePatchApplyExitCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($cmakePatchApplyExitCode -ne 0) { throw 'WebKit CMake compatibility patch failed' }
+  }
+
   git apply (Join-Path $root 'patches/windows-system-icu.patch')
   if ($LASTEXITCODE -ne 0) { throw 'Windows system ICU compatibility patch failed' }
   Copy-Item (Join-Path $root 'bridge/windows-system-icu.h') 'Source/JavaScriptCore/runtime/CottontailWindowsSystemICU.h'
