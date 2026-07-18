@@ -54,7 +54,7 @@ try {
     }
   }
 
-  $segmentedVector = 'Source/WTF/wtf/SegmentedVector.h'
+  $segmentedVector = Join-Path $webkit 'Source/WTF/wtf/SegmentedVector.h'
   $contents = [IO.File]::ReadAllText($segmentedVector)
   $old = '[[no_unique_address]] std::conditional_t<hasInlineStorage, InlineStorageData, EmptyInlineStorage> m_inlineStorageMember;'
   $new = 'NO_UNIQUE_ADDRESS std::conditional_t<hasInlineStorage, InlineStorageData, EmptyInlineStorage> m_inlineStorageMember;'
