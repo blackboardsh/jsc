@@ -120,6 +120,7 @@ jobs:
       version: "2026.05.1"
     environment:
       LLVM_VERSION: 21.1.8
+      LLVM_SHA256: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
       WINDOWS_JSCONLY_PATCH_COMMIT: 2d96c99b553946b611978b26dd1f83a8b68be10a
       WINDOWS_JSCONLY_PATCH_SHA256: c5a909008db01b72d7af7a2204dc6223fa24f9588aa7841370a21f4381cec767
       WINDOWS_MSVC_ATTRIBUTE_PATCH_COMMIT: 87d57a3fc39c408dd484cd3341a9448f3be2208d
@@ -130,12 +131,16 @@ jobs:
       - run:
           name: Install dependencies
           shell: powershell.exe
+          no_output_timeout: 30m
           command: |
             nvm install 24.11.1 64
             nvm use 24.11.1 64
             choco install strawberryperl ninja msys2 -y --no-progress
             $installer = Join-Path $env:TEMP "LLVM-$env:LLVM_VERSION-win64.exe"
-            Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe" -OutFile $installer
+            curl.exe --fail --location --retry 3 --output $installer "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe"
+            if ($LASTEXITCODE -ne 0) { throw 'LLVM download failed' }
+            $actualHash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $env:LLVM_SHA256) { throw "LLVM checksum mismatch: $actualHash" }
             $process = Start-Process -FilePath $installer -ArgumentList '/S', '/D=C:\LLVM' -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw 'LLVM installation failed' }
       - run:
