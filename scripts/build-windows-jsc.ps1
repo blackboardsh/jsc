@@ -111,7 +111,7 @@ $icuScriptContents = @(
   'echo "MSVC compiler: $(command -v cl)"'
   'echo "MSVC linker: $(command -v link)"'
   "cd '$buildUnix'"
-  "'$sourceUnix/source/runConfigureICU' MSYS/MSVC --prefix='$installUnix' --enable-static --disable-shared --with-data-packaging=archive --disable-tests --disable-samples --disable-extras --disable-icuio"
+  "'$sourceUnix/source/runConfigureICU' MSYS/MSVC --build=x86_64-pc-mingw32 --host=x86_64-pc-mingw32 --prefix='$installUnix' --enable-static --disable-shared --with-data-packaging=archive --disable-tests --disable-samples --disable-extras --disable-icuio"
   'make -j4'
   'make install'
 ) -join "`n"

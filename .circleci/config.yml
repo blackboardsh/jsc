@@ -136,6 +136,8 @@ jobs:
             nvm install 24.11.1 64
             nvm use 24.11.1 64
             choco install strawberryperl ninja msys2 -y --no-progress
+            C:\tools\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm make"
+            if ($LASTEXITCODE -ne 0) { throw 'MSYS2 GNU Make installation failed' }
             $installer = Join-Path $env:TEMP "LLVM-$env:LLVM_VERSION-win64.exe"
             curl.exe --fail --location --retry 3 --output $installer "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe"
             if ($LASTEXITCODE -ne 0) { throw 'LLVM download failed' }
