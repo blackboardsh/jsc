@@ -178,6 +178,15 @@ foreach ($feature in @('ENABLE_JIT', 'ENABLE_DFG_JIT', 'ENABLE_FTL_JIT', 'ENABLE
 foreach ($feature in @('ENABLE_SAMPLING_PROFILER', 'ENABLE_REMOTE_INSPECTOR')) {
   if ($cmakeConfig -notmatch "(?m)^#define $feature 0\r?$") { throw "Expected production-only feature is enabled: $feature" }
 }
+$jscLibrary = Join-Path $buildDir 'lib/JavaScriptCore.lib'
+if (-not (Test-Path $jscLibrary)) { throw 'JavaScriptCore.lib not found' }
+node (Join-Path $root 'scripts/verify-windows-icu-contract.js') `
+  'C:\LLVM\bin\llvm-nm.exe' `
+  $jscLibrary `
+  (Join-Path $icuInstall 'lib/sicuuc.lib') `
+  (Join-Path $icuInstall 'lib/sicuin.lib') `
+  (Join-Path $icuInstall 'lib/sicudt.lib')
+if ($LASTEXITCODE -ne 0) { throw 'Windows ICU bridge contract verification failed' }
 $smokeTest = Join-Path $temp 'jsc-smoke-test.js'
 $smokeSource = 'if(new Intl.NumberFormat("fr-FR",{useGrouping:false,minimumFractionDigits:1}).format(1.5)!=="1,5")throw new Error("Intl failed");if("e\u0301".normalize("NFC")!=="\u00e9")throw new Error("normalization failed");const w=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,7,1,3,97,110,115,0,0,10,6,1,4,0,65,42,11]);if(new WebAssembly.Instance(new WebAssembly.Module(w)).exports.ans()!==42)throw new Error("WebAssembly failed");'
 [IO.File]::WriteAllText($smokeTest, "$smokeSource`n", $utf8)
