@@ -254,5 +254,5 @@ jobs:
           JSC_R2_ACCOUNT_ID: ${{ secrets.JSC_R2_ACCOUNT_ID }}
           JSC_R2_ACCESS_KEY_ID: ${{ secrets.JSC_R2_ACCESS_KEY_ID }}
           JSC_R2_SECRET_ACCESS_KEY: ${{ secrets.JSC_R2_SECRET_ACCESS_KEY }}
-          JSC_R2_PUBLIC_BASE_URL: ${{ vars.JSC_R2_PUBLIC_BASE_URL }}
+          JSC_R2_PUBLIC_BASE_URL: ${{ secrets.JSC_R2_PUBLIC_BASE_URL || vars.JSC_R2_PUBLIC_BASE_URL }}
         run: node scripts/upload-release-r2.js

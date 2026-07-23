@@ -56,7 +56,8 @@ GitHub repository secrets:
 - `JSC_R2_ACCESS_KEY_ID`
 - `JSC_R2_SECRET_ACCESS_KEY`
 
-Configure this GitHub repository variable:
+Configure this value as either a GitHub repository secret or variable. The
+secret takes precedence when both exist:
 
 - `JSC_R2_PUBLIC_BASE_URL` (for example `https://electrobun-artifacts.blackboard.sh`)
 
