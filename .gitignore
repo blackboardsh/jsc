@@ -1,1 +1,6 @@
-# Add files to ignore here
+/WebKit/
+/WebKitBuild/
+/.build-temp/
+/build-metadata/
+/icu-build/
+/release/

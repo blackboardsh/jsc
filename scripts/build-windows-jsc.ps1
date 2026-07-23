@@ -9,19 +9,33 @@ $temp = Join-Path $root '.build-temp'
 $icuPrefix = Join-Path $root 'icu-build'
 $artifactName = 'cottontail-jsc-windows-amd64'
 $icuHash = '8d205428c17bf13bb535300669ed28b338a157b1c01ae66d31d0d3e2d47c3fd5'
+$localBuild = $env:JSC_LOCAL_BUILD -eq '1'
 
-Remove-Item $webkit, $output, $temp, $icuPrefix -Recurse -Force -ErrorAction Ignore
+if ($localBuild) {
+  Remove-Item $output, $temp, $icuPrefix -Recurse -Force -ErrorAction Ignore
+} else {
+  Remove-Item $webkit, $output, $temp, $icuPrefix -Recurse -Force -ErrorAction Ignore
+}
 New-Item -ItemType Directory -Force -Path $temp, $icuPrefix, (Join-Path $root 'release') | Out-Null
-git clone --depth 1 --filter=blob:none --no-checkout --branch $metadata.webkitRef https://github.com/WebKit/WebKit.git $webkit
-if ($LASTEXITCODE -ne 0) { throw 'WebKit clone failed' }
-git -C $webkit sparse-checkout init --no-cone
-[IO.File]::WriteAllLines(
-  (Join-Path $webkit '.git/info/sparse-checkout'),
-  @('/*', '!/JSTests/', '!/LayoutTests/', '!/ManualTests/', '!/WebDriverTests/'),
-  $utf8
-)
-git -C $webkit checkout --detach $metadata.webkitSha
-if ($LASTEXITCODE -ne 0) { throw 'WebKit checkout failed' }
+if ($localBuild -and (Test-Path (Join-Path $webkit '.git'))) {
+  $actualSha = (& git -C $webkit rev-parse HEAD).Trim()
+  if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the local WebKit checkout' }
+  if ($actualSha -ne $metadata.webkitSha -and $env:JSC_ALLOW_WEBKIT_FORK -ne '1') {
+    throw "Local WebKit checkout is based at $actualSha, expected $($metadata.webkitSha). Remove $webkit to adopt the new fork point, or set JSC_ALLOW_WEBKIT_FORK=1 for an intentional local WebKit branch."
+  }
+  Write-Host "Reusing local WebKit checkout at $actualSha (fork point: $($metadata.webkitSha))"
+} else {
+  git clone --depth 1 --filter=blob:none --no-checkout --branch $metadata.webkitRef https://github.com/WebKit/WebKit.git $webkit
+  if ($LASTEXITCODE -ne 0) { throw 'WebKit clone failed' }
+  git -C $webkit sparse-checkout init --no-cone
+  [IO.File]::WriteAllLines(
+    (Join-Path $webkit '.git/info/sparse-checkout'),
+    @('/*', '!/JSTests/', '!/LayoutTests/', '!/ManualTests/', '!/WebDriverTests/'),
+    $utf8
+  )
+  git -C $webkit checkout --detach $metadata.webkitSha
+  if ($LASTEXITCODE -ne 0) { throw 'WebKit checkout failed' }
+}
 
 Push-Location $webkit
 try {
@@ -74,8 +88,18 @@ try {
     if ($cmakePatchApplyExitCode -ne 0) { throw 'WebKit CMake compatibility patch failed' }
   }
 
-  git apply (Join-Path $root 'patches/windows-system-icu.patch')
-  if ($LASTEXITCODE -ne 0) { throw 'Windows system ICU compatibility patch failed' }
+  $windowsSystemIcuPatch = Join-Path $root 'patches/windows-system-icu.patch'
+  $ErrorActionPreference = 'Continue'
+  git apply --reverse --check $windowsSystemIcuPatch 2>$null
+  $windowsSystemIcuReverseExitCode = $LASTEXITCODE
+  $ErrorActionPreference = 'Stop'
+  if ($windowsSystemIcuReverseExitCode -ne 0) {
+    $ErrorActionPreference = 'Continue'
+    git apply $windowsSystemIcuPatch
+    $windowsSystemIcuApplyExitCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($windowsSystemIcuApplyExitCode -ne 0) { throw 'Windows system ICU compatibility patch failed' }
+  }
   Copy-Item (Join-Path $root 'bridge/windows-system-icu.h') 'Source/JavaScriptCore/runtime/CottontailWindowsSystemICU.h'
 } finally {
   Pop-Location

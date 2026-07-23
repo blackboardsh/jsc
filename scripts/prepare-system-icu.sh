@@ -21,6 +21,30 @@ icu_version=70.1
 archive="$RUNNER_TEMP/icu4c-${icu_version}-src.tgz"
 source_root="$RUNNER_TEMP/icu4c-${icu_version}-src"
 url="https://github.com/unicode-org/icu/releases/download/release-70-1/icu4c-70_1-src.tgz"
+cache_stamp="$install_prefix/.local-build-key"
+
+local_cache_is_valid() {
+    [[ "${JSC_LOCAL_BUILD:-0}" == 1 ]] || return 1
+    [[ -n "${JSC_LOCAL_ICU_KEY:-}" ]] || return 1
+    [[ -f "$cache_stamp" ]] || return 1
+    [[ "$(cat "$cache_stamp")" == "$JSC_LOCAL_ICU_KEY" ]] || return 1
+    test -s "$install_prefix/include/unicode/utypes.h"
+    test -s "$install_prefix/lib/cottontail-icu/libicudata.a"
+    test -s "$install_prefix/lib/cottontail-icu/libicuuc.a"
+    test -s "$install_prefix/lib/cottontail-icu/libicui18n.a"
+    test -s "$install_prefix/lib/cottontail-icu/icudt70l.dat"
+    if [[ "$platform" == linux ]]; then
+        test -s "$install_prefix/lib/libcottontail_icu.a"
+        test -s "$install_prefix/lib/libicuuc.a"
+        test -s "$install_prefix/lib/libicui18n.a"
+        test -s "$install_prefix/lib/libicudata.a"
+    fi
+}
+
+if local_cache_is_valid; then
+    echo "Reusing local ICU $icu_version build for $platform"
+    exit 0
+fi
 
 rm -rf "$install_prefix" "$source_root"
 mkdir -p "$install_prefix/include" "$install_prefix/lib" "$source_root"
@@ -121,3 +145,7 @@ printf '%s\n' \
     'SDKs also contain static ICU 70.1 fallback code and an external icudt70l.dat database.' \
     'The fallback code can be linked into a signed executable without bundling the data database.' \
     > "$install_prefix/SYSTEM_ICU_USAGE"
+
+if [[ "${JSC_LOCAL_BUILD:-0}" == 1 && -n "${JSC_LOCAL_ICU_KEY:-}" ]]; then
+    printf '%s\n' "$JSC_LOCAL_ICU_KEY" > "$cache_stamp"
+fi

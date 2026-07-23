@@ -92,7 +92,11 @@ fi
 if [[ -d "$jsc_build_dir/JavaScriptCore/DerivedSources" ]]; then
     find "$jsc_build_dir/JavaScriptCore/DerivedSources" -type f -name '*.h' -exec cp {} "$package_dir/include/JavaScriptCore/" \;
 fi
-node -p "require('$root/build-metadata/webkit.json').webkitSha" > "$package_dir/WEBKIT_REVISION"
+if [[ "${JSC_LOCAL_BUILD:-0}" == 1 ]]; then
+    git -C "$root/WebKit" rev-parse HEAD > "$package_dir/WEBKIT_REVISION"
+else
+    node -p "require('$root/build-metadata/webkit.json').webkitSha" > "$package_dir/WEBKIT_REVISION"
+fi
 
 archive="$root/release/$ARTIFACT_NAME.tar.gz"
 tar -C "$RUNNER_TEMP" -czf "$archive" "$ARTIFACT_NAME"

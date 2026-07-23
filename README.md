@@ -75,3 +75,15 @@ Convenience pointers are updated only after the complete matrix is uploaded:
 Pull requests build and retain GitHub Actions artifacts but skip R2. Run
 `node scripts/upload-release-r2.js --dry-run` against a locally assembled
 `release/` directory to validate the publication set without credentials.
+
+## Local stack build
+
+Run `node scripts/build-local-jsc.js` to produce the host SDK consumed by a
+sibling Cottontail checkout. The command fingerprints committed and uncommitted
+JSC/WebKit inputs, reuses an unchanged SDK, and preserves the generated
+`WebKit`, `WebKitBuild`, and ICU build directories for local iteration.
+
+The first invocation needs the same host dependencies as the corresponding
+GitHub Actions build. Set `COTTONTAIL_ROOT` when the Cottontail checkout is not
+at `../cottontail`. Set `DASH_LOCAL_REBUILD_JSC=1` or pass `--force` to rebuild
+an otherwise current SDK.
