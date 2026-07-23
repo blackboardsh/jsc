@@ -65,7 +65,9 @@ const metadata = {
   schema: 1,
   webkitRef,
   webkitSha,
-  buildRevision: process.env.CIRCLE_SHA1 || execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+  buildRevision: process.env.GITHUB_SHA
+    || process.env.CIRCLE_SHA1
+    || execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
 };
 mkdirSync('build-metadata', { recursive: true });
 writeFileSync('build-metadata/webkit.json', `${JSON.stringify(metadata, null, 2)}\n`);

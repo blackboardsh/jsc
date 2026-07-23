@@ -35,27 +35,29 @@ build-time smoke test. Runtime selection for an embedded JSC belongs to
 Cottontail, and the required symbol contract is published under
 `share/cottontail-jsc/`.
 
-## CircleCI build and publishing
+## GitHub Actions build and publishing
 
-CircleCI resolves the newest upstream `WebKit-*` tag, checks out WebKit directly
+GitHub Actions resolves the newest upstream `WebKit-*` tag, checks out WebKit directly
 with the large test suites excluded, and builds all four native targets. Set
-the `webkit_ref` pipeline parameter to build an exact tag instead. Automatic
+the `webkit_ref` manual-workflow input to build an exact tag instead. Automatic
 selection orders tags by upstream commit date rather than the numeric-looking tag name;
-set `GITHUB_TOKEN` to a public-repository read token so the resolver can use
-GitHub's GraphQL tag ordering. An exact `webkit_ref` does not require that token.
+the workflow uses its built-in `GITHUB_TOKEN` to query GitHub's GraphQL API. No
+custom GitHub token is required.
 
-To follow upstream automatically, create a weekly schedule trigger for `main`
-in CircleCI with `webkit_ref` left empty. CircleCI stores schedule triggers in
-project settings rather than this repository; the same fan-in and R2 publishing
-gate is used for scheduled and pushed pipelines.
+The committed workflow checks for a new upstream tag every Monday and can also
+be run manually from `main`. The same fan-in and R2 publishing gate is used for
+scheduled, pushed, and manual workflows.
 
 The R2 publisher runs only after every build and Intl smoke test passes. It
 uploads to the `electrobun-artifacts` bucket under `jsc/` and requires these
-CircleCI project variables:
+GitHub repository secrets:
 
 - `JSC_R2_ACCOUNT_ID`
 - `JSC_R2_ACCESS_KEY_ID`
 - `JSC_R2_SECRET_ACCESS_KEY`
+
+Configure this GitHub repository variable:
+
 - `JSC_R2_PUBLIC_BASE_URL` (for example `https://electrobun-artifacts.blackboard.sh`)
 
 Published objects use immutable build paths:
@@ -69,6 +71,6 @@ Convenience pointers are updated only after the complete matrix is uploaded:
 - `jsc/releases/<WebKit-tag>/manifest.json`
 - `jsc/latest.json`
 
-Non-`main` pipelines build and retain CircleCI artifacts but skip R2. Run
+Pull requests build and retain GitHub Actions artifacts but skip R2. Run
 `node scripts/upload-release-r2.js --dry-run` against a locally assembled
 `release/` directory to validate the publication set without credentials.

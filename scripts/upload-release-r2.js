@@ -8,7 +8,6 @@ const dryRun = process.argv.includes('--dry-run') || process.env.JSC_R2_DRY_RUN 
 const bucket = 'electrobun-artifacts';
 const rootPrefix = 'jsc';
 const publicBaseUrl = (process.env.JSC_R2_PUBLIC_BASE_URL ?? 'https://preview.invalid').replace(/\/+$/, '');
-const metadata = JSON.parse(readFileSync('build-metadata/webkit.json', 'utf8'));
 const expectedDataSha256 = '672dafc4940a0183cb48c3e369c1a0795cc8dfbf19951c86ced0ad78398f9480';
 const matrix = {
   'macos-arm64': 'cottontail-jsc-macos-arm64',
@@ -73,6 +72,11 @@ if (process.env.CIRCLECI === 'true' && process.env.CIRCLE_BRANCH !== 'main') {
   console.log(`Skipping R2 upload from ${process.env.CIRCLE_BRANCH ?? '(unknown branch)'}`);
   process.exit(0);
 }
+if (process.env.GITHUB_ACTIONS === 'true' && process.env.GITHUB_REF !== 'refs/heads/main') {
+  console.log(`Skipping R2 upload from ${process.env.GITHUB_REF ?? '(unknown ref)'}`);
+  process.exit(0);
+}
+const metadata = JSON.parse(readFileSync('build-metadata/webkit.json', 'utf8'));
 const required = ['JSC_R2_ACCOUNT_ID', 'JSC_R2_ACCESS_KEY_ID', 'JSC_R2_SECRET_ACCESS_KEY', 'JSC_R2_PUBLIC_BASE_URL'];
 if (!dryRun) {
   const missing = required.filter((name) => !process.env[name]);

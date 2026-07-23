@@ -18,7 +18,7 @@ mkdir -p "$RUNNER_TEMP" "$root/release"
 
 jsc_cxxflags="-DU_DISABLE_RENAMING=1"
 if [[ "$TARGET_OS" == linux ]]; then
-    # Match Cottontail's Clang/GNU bridge setup. Circle's LLVM package does
+    # Match Cottontail's Clang/GNU bridge setup. The runner's LLVM package does
     # not reliably discover the machine image's GCC headers or libraries, so
     # point Clang at the exact native GCC installation while retaining the
     # libstdc++ ABI expected by the published JSC archives.

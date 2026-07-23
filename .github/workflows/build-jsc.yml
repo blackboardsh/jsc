@@ -1,0 +1,258 @@
+name: Build and publish JavaScriptCore
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      webkit_ref:
+        description: Exact upstream WebKit tag; leave empty to resolve the newest release
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jsc-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  LLVM_VERSION: 21.1.8
+  LLVM_SHA256: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
+  WINDOWS_JSCONLY_PATCH_COMMIT: 2d96c99b553946b611978b26dd1f83a8b68be10a
+  WINDOWS_JSCONLY_PATCH_SHA256: c5a909008db01b72d7af7a2204dc6223fa24f9588aa7841370a21f4381cec767
+  WINDOWS_MSVC_ATTRIBUTE_PATCH_COMMIT: 87d57a3fc39c408dd484cd3341a9448f3be2208d
+  WINDOWS_MSVC_ATTRIBUTE_PATCH_SHA256: baf88f17960706e82d1919bbbe109a58f74f1dcb6a263971774a8e693aca1ee1
+
+jobs:
+  resolve-webkit:
+    name: Resolve upstream WebKit release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out JSC build repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.11.1
+          package-manager-cache: false
+
+      - name: Resolve upstream WebKit release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          WEBKIT_REF: ${{ github.event.inputs.webkit_ref || '' }}
+        run: node scripts/resolve-webkit-ref.js
+
+      - name: Retain resolved WebKit metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jsc-build-metadata
+          path: build-metadata/webkit.json
+          if-no-files-found: error
+          retention-days: 14
+
+  build-unix:
+    name: Build ${{ matrix.platform }}
+    needs:
+      - resolve-webkit
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-26
+            target_os: macos
+            artifact_name: cottontail-jsc-macos-arm64
+            cc: clang
+            cxx: clang++
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            target_os: linux
+            artifact_name: cottontail-jsc-linux-amd64
+            cc: clang-18
+            cxx: clang++-18
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target_os: linux
+            artifact_name: cottontail-jsc-linux-arm64
+            cc: clang-18
+            cxx: clang++-18
+
+    steps:
+      - name: Check out JSC build repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download resolved WebKit metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: jsc-build-metadata
+          path: build-metadata
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.11.1
+          package-manager-cache: false
+
+      - name: Install macOS dependencies
+        if: matrix.target_os == 'macos'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew install ninja
+          cmake_archive="$HOME/cmake-3.31.8-macos-universal.tar.gz"
+          curl --fail --location --retry 3 \
+            --output "$cmake_archive" \
+            https://github.com/Kitware/CMake/releases/download/v3.31.8/cmake-3.31.8-macos-universal.tar.gz
+          echo 'd1449f969c54d5c00886d5b643340d493dfb3c81cb39ee29b35453395c11ebf7  '"$cmake_archive" | shasum -a 256 -c -
+          mkdir -p "$HOME/.local/cmake"
+          tar -xzf "$cmake_archive" --strip-components=1 -C "$HOME/.local/cmake"
+          echo "$HOME/.local/cmake/CMake.app/Contents/bin" >> "$GITHUB_PATH"
+
+      - name: Install Linux dependencies
+        if: matrix.target_os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang-18 \
+            lld-18 \
+            ninja-build \
+            python3 \
+            ruby
+
+      - name: Build and package JSC
+        env:
+          TARGET_OS: ${{ matrix.target_os }}
+          PLATFORM_KEY: ${{ matrix.platform }}
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: bash scripts/build-unix-jsc.sh
+
+      - name: Retain JSC release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jsc-release-${{ matrix.platform }}
+          path: |
+            release/${{ matrix.artifact_name }}.tar.gz
+            release/${{ matrix.artifact_name }}.tar.gz.sha256
+            release/icudt70l-${{ matrix.platform }}.dat
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  build-windows:
+    name: Build windows-x64
+    needs:
+      - resolve-webkit
+    runs-on: windows-2025
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out JSC build repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download resolved WebKit metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: jsc-build-metadata
+          path: build-metadata
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.11.1
+          architecture: x64
+          package-manager-cache: false
+
+      - name: Install Windows dependencies
+        shell: pwsh
+        run: |
+          $nodeIdentity = node -p "process.versions.node + ' ' + process.platform + ' ' + process.arch"
+          if ($LASTEXITCODE -ne 0 -or $nodeIdentity.Trim() -ne "24.11.1 win32 x64") {
+            throw "Expected Node 24.11.1 win32 x64, got '$nodeIdentity'"
+          }
+          choco install strawberryperl ninja msys2 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Chocolatey dependency installation failed' }
+          C:\tools\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm make"
+          if ($LASTEXITCODE -ne 0) { throw 'MSYS2 GNU Make installation failed' }
+          $installer = Join-Path $env:RUNNER_TEMP "LLVM-$env:LLVM_VERSION-win64.exe"
+          curl.exe --fail --location --retry 3 --output $installer "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'LLVM download failed' }
+          $actualHash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:LLVM_SHA256) { throw "LLVM checksum mismatch: $actualHash" }
+          $process = Start-Process -FilePath $installer -ArgumentList '/S', '/D=C:\LLVM' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'LLVM installation failed' }
+
+      - name: Build and package JSC
+        shell: pwsh
+        run: .\scripts\build-windows-jsc.ps1
+
+      - name: Retain JSC release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jsc-release-windows-x64
+          path: |
+            release/cottontail-jsc-windows-amd64.tar.gz
+            release/cottontail-jsc-windows-amd64.tar.gz.sha256
+            release/icudt70l-windows-x64.dat
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    name: Publish complete JSC matrix to R2
+    needs:
+      - resolve-webkit
+      - build-unix
+      - build-windows
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: jsc-r2-publish
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out JSC build repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.11.1
+          package-manager-cache: false
+
+      - name: Download resolved WebKit metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: jsc-build-metadata
+          path: build-metadata
+
+      - name: Download complete JSC release matrix
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: jsc-release-*
+          path: release
+          merge-multiple: true
+
+      - name: Publish complete JSC matrix
+        env:
+          JSC_R2_ACCOUNT_ID: ${{ secrets.JSC_R2_ACCOUNT_ID }}
+          JSC_R2_ACCESS_KEY_ID: ${{ secrets.JSC_R2_ACCESS_KEY_ID }}
+          JSC_R2_SECRET_ACCESS_KEY: ${{ secrets.JSC_R2_SECRET_ACCESS_KEY }}
+          JSC_R2_PUBLIC_BASE_URL: ${{ vars.JSC_R2_PUBLIC_BASE_URL }}
+        run: node scripts/upload-release-r2.js
