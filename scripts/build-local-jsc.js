@@ -243,7 +243,7 @@ function build(config, manifest) {
 			WINDOWS_MSVC_ATTRIBUTE_PATCH_COMMIT:
 				"87d57a3fc39c408dd484cd3341a9448f3be2208d",
 			WINDOWS_MSVC_ATTRIBUTE_PATCH_SHA256:
-				"baf88f17960706e82d1919bbbe109a58f74f1dcb6a263971774a8e693aca1ee1",
+				"75e5d15551191057f098e976c8f6b3242a36aaf38d03058ab5aad9da3763978f",
 		});
 		const powershell = commandExists("pwsh") ? "pwsh" : "powershell.exe";
 		run(
