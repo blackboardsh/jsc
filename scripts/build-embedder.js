@@ -6,6 +6,8 @@ import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "no
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { rewriteCompileCommand } from "./embedder-command.mjs";
+
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const buildDir = resolve(process.argv[2] || process.env.WEBKIT_OUTPUTDIR || join(root, "WebKitBuild"));
 const outputDir = resolve(process.argv[3] || join(buildDir, "cottontail-embedder"));
@@ -32,24 +34,30 @@ if (!representative?.command) {
   throw new Error("Could not find a JavaScriptCore C++ command in compile_commands.json");
 }
 
-const quote = value => process.platform === "win32"
-  ? `"${value.replaceAll('"', '\\"')}"`
-  : `'${value.replaceAll("'", "'\\''")}'`;
-let command = representative.command;
+const command = rewriteCompileCommand({
+  command: representative.command,
+  directory: representative.directory,
+  originalSource: representative.file,
+  source,
+  object,
+  platform: process.platform,
+});
 if (process.platform === "win32") {
-  command = command
-    .replace(/(?:\/Fo|-o\s+)(?:"[^"]+"|\S+)/i, `/Fo${quote(object)}`)
-    .replace(new RegExp(escapeRegExp(representative.file), "g"), quote(source));
   execSync(command, { cwd: representative.directory, stdio: "inherit", shell: "cmd.exe" });
   const librarian = process.env.LLVM_LIB || "llvm-lib";
   execFileSync(librarian, [`/OUT:${library}`, object], { stdio: "inherit" });
 } else {
-  command = command
-    .replace(/-o\s+(?:'[^']+'|"[^"]+"|\S+)/, `-o ${quote(object)}`)
-    .replace(new RegExp(escapeRegExp(representative.file), "g"), quote(source));
   execSync(command, { cwd: representative.directory, stdio: "inherit", shell: "/bin/sh" });
   execFileSync(process.env.AR || "ar", ["rcs", library, object], { stdio: "inherit" });
 }
+
+const requiredSymbols = [...new Set(
+  [...readFileSync(header, "utf8").matchAll(/\b(ct_jsc_[A-Za-z0-9_]+)\s*\(/g)]
+    .map(match => match[1]),
+)];
+const nm = process.env.LLVM_NM || process.env.NM || "nm";
+verifySymbols(nm, object, requiredSymbols);
+verifySymbols(nm, library, requiredSymbols);
 
 copyFileSync(header, join(outputDir, basename(header)));
 const packagedHeader = join(outputDir, basename(header));
@@ -67,6 +75,15 @@ writeFileSync(manifestPath, `${JSON.stringify({
 }, null, 2)}\n`);
 console.log(JSON.stringify({ library, header: packagedHeader, manifest: manifestPath }));
 
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function verifySymbols(nm, path, required) {
+  const output = execFileSync(nm, [path], {
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const missing = required.filter(symbol =>
+    !new RegExp(`(?:^|[^A-Za-z0-9_])_?${symbol}(?:$|[^A-Za-z0-9_])`, "m").test(output)
+  );
+  if (missing.length > 0) {
+    throw new Error(`${path} is missing Cottontail embedder symbols: ${missing.join(", ")}`);
+  }
 }
