@@ -184,7 +184,7 @@ $buildCmd = Join-Path $temp 'build-jsc.cmd'
   'set PATH=C:\ProgramData\chocolatey\bin;C:\Strawberry\perl\bin;%PATH%'
   "set SYSTEM_ICU_LIB=%WindowsSdkDir%Lib\%WindowsSDKVersion%um\x64\icu.lib"
   "cd /d `"$webkit`""
-  "cmake -S . -B `"$output\Release`" -G Ninja -DPORT=JSCOnly -DCMAKE_BUILD_TYPE=Release -DDEVELOPER_MODE=ON -DENABLE_STATIC_JSC=ON -DENABLE_API_TESTS=OFF -DENABLE_JIT=ON -DENABLE_DFG_JIT=ON -DENABLE_FTL_JIT=ON -DENABLE_WEBASSEMBLY=ON -DENABLE_WEBASSEMBLY_BBQJIT=ON -DENABLE_WEBASSEMBLY_OMGJIT=ON -DENABLE_SAMPLING_PROFILER=OFF -DENABLE_REMOTE_INSPECTOR=OFF -DCMAKE_C_COMPILER=C:/LLVM/bin/clang-cl.exe -DCMAKE_CXX_COMPILER=C:/LLVM/bin/clang-cl.exe -DCMAKE_C_FLAGS=/DU_DISABLE_RENAMING=1 -DCMAKE_CXX_FLAGS=/DU_DISABLE_RENAMING=1 -DCMAKE_LINKER=C:/LLVM/bin/lld-link.exe -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DICU_INCLUDE_DIR=`"$icuPrefix/include`" -DICU_DATA_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`" -DICU_I18N_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`" -DICU_UC_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`""
+  "cmake -S . -B `"$output\Release`" -G Ninja -DPORT=JSCOnly -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDEVELOPER_MODE=ON -DENABLE_STATIC_JSC=ON -DENABLE_API_TESTS=OFF -DENABLE_JIT=ON -DENABLE_DFG_JIT=ON -DENABLE_FTL_JIT=ON -DENABLE_WEBASSEMBLY=ON -DENABLE_WEBASSEMBLY_BBQJIT=ON -DENABLE_WEBASSEMBLY_OMGJIT=ON -DENABLE_SAMPLING_PROFILER=OFF -DENABLE_REMOTE_INSPECTOR=OFF -DCMAKE_C_COMPILER=C:/LLVM/bin/clang-cl.exe -DCMAKE_CXX_COMPILER=C:/LLVM/bin/clang-cl.exe -DCMAKE_C_FLAGS=/DU_DISABLE_RENAMING=1 -DCMAKE_CXX_FLAGS=/DU_DISABLE_RENAMING=1 -DCMAKE_LINKER=C:/LLVM/bin/lld-link.exe -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DICU_INCLUDE_DIR=`"$icuPrefix/include`" -DICU_DATA_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`" -DICU_I18N_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`" -DICU_UC_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`""
   'if errorlevel 1 exit /b %errorlevel%'
   "cmake --build `"$output\Release`" --target jsc --parallel"
   'exit /b %errorlevel%'
@@ -204,6 +204,15 @@ foreach ($feature in @('ENABLE_SAMPLING_PROFILER', 'ENABLE_REMOTE_INSPECTOR')) {
 }
 $jscLibrary = Join-Path $buildDir 'lib/JavaScriptCore.lib'
 if (-not (Test-Path $jscLibrary)) { throw 'JavaScriptCore.lib not found' }
+$embedderDir = Join-Path $buildDir 'cottontail-embedder'
+node (Join-Path $root 'scripts/build-embedder.js') $buildDir $embedderDir
+if ($LASTEXITCODE -ne 0) { throw 'Cottontail JSC embedder build failed' }
+$embedderLibrary = Join-Path $embedderDir 'CottontailJSCEmbedder.lib'
+$embedderHeader = Join-Path $embedderDir 'cottontail-jsc-embedder.h'
+$embedderManifest = Join-Path $embedderDir 'embedder-manifest.json'
+if (-not (Test-Path $embedderLibrary)) { throw 'CottontailJSCEmbedder.lib not found' }
+if (-not (Test-Path $embedderHeader)) { throw 'cottontail-jsc-embedder.h not found' }
+if (-not (Test-Path $embedderManifest)) { throw 'embedder-manifest.json not found' }
 node (Join-Path $root 'scripts/verify-windows-icu-contract.js') `
   'C:\LLVM\bin\llvm-nm.exe' `
   $jscLibrary `
@@ -218,12 +227,18 @@ $smokeSource = 'if(new Intl.NumberFormat("fr-FR",{useGrouping:false,minimumFract
 if ($LASTEXITCODE -ne 0) { throw 'Windows JSC smoke test failed' }
 $packageDir = Join-Path $temp $artifactName
 New-Item -ItemType Directory -Force -Path "$packageDir/bin", "$packageDir/lib", "$packageDir/share/cottontail-jsc", "$packageDir/include/JavaScriptCore", "$packageDir/include/wtf", "$packageDir/include/bmalloc" | Out-Null
+New-Item -ItemType Directory -Force -Path "$packageDir/include/cottontail" | Out-Null
 Copy-Item $jsc.FullName "$packageDir/bin/"
 Get-ChildItem "$buildDir/lib" -File | Where-Object Extension -In '.lib', '.dll' | Copy-Item -Destination "$packageDir/lib/"
+Copy-Item $embedderLibrary "$packageDir/lib/"
+Copy-Item $embedderHeader "$packageDir/include/cottontail/"
+Copy-Item $embedderManifest "$packageDir/share/cottontail-jsc/"
 Copy-Item $fallback "$packageDir/lib/" -Recurse
 Remove-Item "$packageDir/lib/cottontail-icu/icudt70l.dat"
 Copy-Item (Join-Path $root 'bridge/icu-symbols.inc') "$packageDir/share/cottontail-jsc/"
 [IO.File]::WriteAllText("$packageDir/share/cottontail-jsc/ICU_ABI", "ICU_ABI_FLOOR=70`n", $utf8)
+$embedderAbi = (Get-Content $embedderManifest -Raw | ConvertFrom-Json).abiVersion
+[IO.File]::WriteAllText("$packageDir/share/cottontail-jsc/EMBEDDER_ABI", "CT_JSC_EMBEDDER_ABI_VERSION=$embedderAbi`n", $utf8)
 Copy-Item "$buildDir/cmakeconfig.h" "$packageDir/include/"
 Copy-Item "$buildDir/JavaScriptCore/Headers/JavaScriptCore/*" "$packageDir/include/JavaScriptCore/" -Recurse
 Copy-Item "$buildDir/WTF/Headers/wtf/*" "$packageDir/include/wtf/" -Recurse

@@ -70,18 +70,30 @@ if [[ "$TARGET_OS" == linux ]]; then
     ! nm -u "$jsc_build_dir/lib/libJavaScriptCore.a" | grep -E ' U u[a-zA-Z0-9_]+_[0-9]+$'
 fi
 
+embedder_dir="$jsc_build_dir/cottontail-embedder"
+node "$root/scripts/build-embedder.js" "$jsc_build_dir" "$embedder_dir"
+test -s "$embedder_dir/libCottontailJSCEmbedder.a"
+test -s "$embedder_dir/cottontail-jsc-embedder.h"
+test -s "$embedder_dir/embedder-manifest.json"
+
 package_dir="$RUNNER_TEMP/$ARTIFACT_NAME"
 rm -rf "$package_dir"
 mkdir -p "$package_dir/bin" "$package_dir/lib" "$package_dir/share/cottontail-jsc" \
     "$package_dir/include/JavaScriptCore" "$package_dir/include/wtf" "$package_dir/include/bmalloc"
 cp "$jsc_binary" "$package_dir/bin/"
 find "$jsc_build_dir/lib" -maxdepth 1 -type f \( -name '*.a' -o -name '*.dylib' -o -name '*.so*' \) -exec cp {} "$package_dir/lib/" \;
+cp "$embedder_dir/libCottontailJSCEmbedder.a" "$package_dir/lib/"
+mkdir -p "$package_dir/include/cottontail"
+cp "$embedder_dir/cottontail-jsc-embedder.h" "$package_dir/include/cottontail/"
+cp "$embedder_dir/embedder-manifest.json" "$package_dir/share/cottontail-jsc/"
 cp -R "$ICU_PREFIX/lib/cottontail-icu" "$package_dir/lib/"
 # The 28 MB database is published once by the fan-in job, not duplicated in
 # every SDK. Keep the metadata and static fallback code in the SDK.
 rm "$package_dir/lib/cottontail-icu/icudt70l.dat"
 cp "$root/bridge/icu-symbols.inc" "$package_dir/share/cottontail-jsc/"
 printf 'ICU_ABI_FLOOR=%s\n' "$ICU_ABI_FLOOR" > "$package_dir/share/cottontail-jsc/ICU_ABI"
+embedder_abi="$(node -p "require('$embedder_dir/embedder-manifest.json').abiVersion")"
+printf 'CT_JSC_EMBEDDER_ABI_VERSION=%s\n' "$embedder_abi" > "$package_dir/share/cottontail-jsc/EMBEDDER_ABI"
 cp "$ICU_PREFIX/SYSTEM_ICU_USAGE" "$package_dir/"
 cp "$jsc_build_dir/cmakeconfig.h" "$package_dir/include/"
 cp -R "$jsc_build_dir/JavaScriptCore/Headers/JavaScriptCore/." "$package_dir/include/JavaScriptCore/"
