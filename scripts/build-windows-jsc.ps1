@@ -205,6 +205,7 @@ foreach ($feature in @('ENABLE_SAMPLING_PROFILER', 'ENABLE_REMOTE_INSPECTOR')) {
 $jscLibrary = Join-Path $buildDir 'lib/JavaScriptCore.lib'
 if (-not (Test-Path $jscLibrary)) { throw 'JavaScriptCore.lib not found' }
 $embedderDir = Join-Path $buildDir 'cottontail-embedder'
+$env:LLVM_LIB = 'C:\LLVM\bin\llvm-lib.exe'
 node (Join-Path $root 'scripts/build-embedder.js') $buildDir $embedderDir
 if ($LASTEXITCODE -ne 0) { throw 'Cottontail JSC embedder build failed' }
 $embedderLibrary = Join-Path $embedderDir 'CottontailJSCEmbedder.lib'
