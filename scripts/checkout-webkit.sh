@@ -42,3 +42,10 @@ if git -C "$checkout" apply --reverse --check "$cmake_compatibility_patch" 2>/de
 else
     git -C "$checkout" apply "$cmake_compatibility_patch"
 fi
+
+bytecode_patch="$root/patches/distributable-bytecode.patch"
+if git -C "$checkout" apply --reverse --check "$bytecode_patch" 2>/dev/null; then
+    echo "Distributable/source-stripped bytecode patch is already present"
+else
+    git -C "$checkout" apply "$bytecode_patch"
+fi
