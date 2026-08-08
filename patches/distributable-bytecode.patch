@@ -1,0 +1,393 @@
+diff --git a/Source/JavaScriptCore/parser/SourceCodeKey.h b/Source/JavaScriptCore/parser/SourceCodeKey.h
+index 6d418cbcd3..4aee0bf19a 100644
+--- a/Source/JavaScriptCore/parser/SourceCodeKey.h
++++ b/Source/JavaScriptCore/parser/SourceCodeKey.h
+@@ -120,6 +120,27 @@ public:
+             && (m_sourceCode == other.m_sourceCode || string() == other.string());
+     }
+ 
++    // Set on keys decoded from a source-stripped bytecode artifact. The source
++    // text (and the hash/length derived from it) is not present, so it must be
++    // excluded from load-time validation. This flag does not participate in
++    // operator== or hash(): the in-memory CodeCache still keys on real source.
++    bool isSourceStripped() const { return m_isSourceStripped; }
++    void setSourceStripped(bool stripped) { m_isSourceStripped = stripped; }
++
++    // Load-time validity comparison used by the bytecode-cache decode path.
++    // Identical to operator== for ordinary artifacts; for a source-stripped
++    // artifact (either side) it validates only the components that survive
++    // stripping, ignoring the absent source string / length / source-hash.
++    bool isCompatibleWithBytecodeCacheKey(const SourceCodeKey& other) const
++    {
++        if (!m_isSourceStripped && !other.m_isSourceStripped)
++            return *this == other;
++        return m_flags == other.m_flags
++            && m_functionConstructorParametersEndPosition == other.m_functionConstructorParametersEndPosition
++            && m_name == other.m_name
++            && host() == other.host();
++    }
++
+     struct HashTraits : SimpleClassHashTraits<SourceCodeKey> {
+         static constexpr bool hasIsEmptyValueFunction = true;
+         static bool isEmptyValue(const SourceCodeKey& key) { return key.isNull(); }
+@@ -131,6 +152,7 @@ private:
+     SourceCodeFlags m_flags;
+     int m_functionConstructorParametersEndPosition;
+     unsigned m_hash;
++    bool m_isSourceStripped { false };
+ };
+ 
+ } // namespace JSC
+diff --git a/Source/JavaScriptCore/parser/SourceProvider.h b/Source/JavaScriptCore/parser/SourceProvider.h
+index 4da609d948..9502d63953 100644
+--- a/Source/JavaScriptCore/parser/SourceProvider.h
++++ b/Source/JavaScriptCore/parser/SourceProvider.h
+@@ -106,6 +106,15 @@ public:
+     SourceTaintedOrigin sourceTaintedOrigin() const { return m_taintedness; }
+     bool couldBeTainted() const { return m_taintedness != SourceTaintedOrigin::Untainted; }
+ 
++    // True when this provider backs code restored from a source-stripped bytecode
++    // artifact and therefore carries no real source text. Function.prototype.
++    // toString uses this to emit `[native code]` instead of slicing empty source.
++    // Set by the bytecode decoder for reconstructed providers, and by the
++    // embedder for the runtime provider it supplies when loading a stripped
++    // artifact.
++    bool isSourceStripped() const { return m_isSourceStripped; }
++    void setSourceStripped(bool stripped) { m_isSourceStripped = stripped; }
++
+     JS_EXPORT_PRIVATE void lockUnderlyingBuffer();
+     JS_EXPORT_PRIVATE void unlockUnderlyingBuffer();
+     JS_EXPORT_PRIVATE virtual CodeBlockHash codeBlockHashConcurrently(int startOffset, int endOffset, CodeSpecializationKind);
+@@ -129,6 +138,7 @@ private:
+     TextPosition m_startPosition;
+     SourceID m_id { 0 };
+     SourceTaintedOrigin m_taintedness;
++    bool m_isSourceStripped { false };
+ };
+ 
+ DECLARE_ALLOCATOR_WITH_HEAP_IDENTIFIER(StringSourceProvider);
+diff --git a/Source/JavaScriptCore/runtime/CachedTypes.cpp b/Source/JavaScriptCore/runtime/CachedTypes.cpp
+index 37c3735c28..7e790c0d9d 100644
+--- a/Source/JavaScriptCore/runtime/CachedTypes.cpp
++++ b/Source/JavaScriptCore/runtime/CachedTypes.cpp
+@@ -97,9 +97,10 @@ public:
+         ptrdiff_t m_offset;
+     };
+ 
+-    Encoder(VM& vm, FileSystem::FileHandle& fileHandle)
++    Encoder(VM& vm, FileSystem::FileHandle& fileHandle, BytecodeCacheOptions options = { })
+         : m_vm(vm)
+         , m_fileHandle(fileHandle)
++        , m_options(options)
+         , m_baseOffset(0)
+         , m_currentPage(nullptr)
+     {
+@@ -108,6 +109,12 @@ public:
+ 
+     VM& vm() { return m_vm; }
+ 
++    // Per-encode options, threaded explicitly through the Encoder object (which is
++    // already passed to every encode()). These are NOT globals: two concurrent
++    // encodes carry independent options.
++    bool distributable() const { return m_options.distributable; }
++    bool stripSource() const { return m_options.stripSource; }
++
+     Allocation malloc(unsigned size)
+     {
+         RELEASE_ASSERT(size);
+@@ -277,6 +284,7 @@ private:
+ 
+     VM& m_vm;
+     FileSystem::FileHandle& m_fileHandle;
++    BytecodeCacheOptions m_options;
+     ptrdiff_t m_baseOffset;
+     Page* m_currentPage;
+     Vector<Page> m_pages;
+@@ -1611,7 +1619,17 @@ public:
+     void encode(Encoder& encoder, const StringSourceProvider& sourceProvider)
+     {
+         Base::encode(encoder, sourceProvider);
+-        m_source.encode(encoder, sourceProvider.source().toString());
++        // When shipping a source-stripped artifact, emit an empty source string
++        // instead of the verbatim program/module text. All position/offset data
++        // (start position, source URL, origin) is still preserved by Base and by
++        // the enclosing CachedUnlinkedSourceCode, so error-stack line/column
++        // information (which comes from the bytecode's expression-info tables,
++        // not from re-reading source) remains correct.
++        m_sourceStripped = encoder.stripSource();
++        if (m_sourceStripped)
++            m_source.encode(encoder, emptyString());
++        else
++            m_source.encode(encoder, sourceProvider.source().toString());
+     }
+ 
+     StringSourceProvider* decode(Decoder& decoder, SourceProviderSourceType sourceType) const
+@@ -1623,11 +1641,17 @@ public:
+ 
+         Ref<StringSourceProvider> sourceProvider = StringSourceProvider::create(decodedSource, decodedSourceOrigin, decodedSourceURL, m_sourceTaintedOrigin, decodedStartPosition, sourceType);
+         Base::decode(decoder, sourceProvider.get());
++        // Mark the reconstructed provider so that, if it ever backs a function's
++        // source(), Function.prototype.toString routes to `[native code]` rather
++        // than slicing the (empty) source. See FunctionExecutable::toStringSlow.
++        if (m_sourceStripped)
++            sourceProvider->setSourceStripped(true);
+         return &sourceProvider.leakRef();
+     }
+ 
+ private:
+     CachedString m_source;
++    bool m_sourceStripped { false };
+ };
+ 
+ #if ENABLE(WEBASSEMBLY)
+@@ -2465,6 +2489,9 @@ public:
+         m_flags = key.m_flags.m_flags;
+         m_hash = key.hash();
+         m_functionConstructorParametersEndPosition = key.m_functionConstructorParametersEndPosition;
++        // Record whether the embedded source was stripped so that load-time
++        // source-key validation knows to ignore the (absent) source string.
++        m_sourceStripped = encoder.stripSource();
+     }
+ 
+     void decode(Decoder& decoder, SourceCodeKey& key) const
+@@ -2474,6 +2501,7 @@ public:
+         key.m_flags.m_flags = m_flags;
+         key.m_hash = m_hash;
+         key.m_functionConstructorParametersEndPosition = m_functionConstructorParametersEndPosition;
++        key.setSourceStripped(m_sourceStripped);
+     }
+ 
+ private:
+@@ -2482,6 +2510,7 @@ private:
+     unsigned m_flags;
+     unsigned m_hash;
+     int m_functionConstructorParametersEndPosition;
++    bool m_sourceStripped { false };
+ };
+ 
+ class GenericCacheEntry {
+@@ -2492,8 +2521,12 @@ public:
+ protected:
+     GenericCacheEntry(Encoder& encoder, CachedCodeBlockTag tag)
+         : m_cacheVersion(computeJSCBytecodeCacheVersion())
++        , m_isDistributable(encoder.distributable())
+         , m_tag(tag)
+     {
++        // The boot-session UUID is always serialized so the header layout is
++        // uniform regardless of mode; it is simply ignored on load for
++        // distributable artifacts (see isUpToDate).
+         m_bootSessionUUID.encode(encoder, bootSessionUUIDString());
+     }
+ 
+@@ -2501,15 +2534,21 @@ protected:
+ 
+     bool isUpToDate(Decoder& decoder) const
+     {
++        // The per-binary JSC image version is always the primary gate: a rebuild
++        // of JavaScriptCore changes it and invalidates every prior artifact.
+         if (m_cacheVersion != computeJSCBytecodeCacheVersion())
+             return false;
+-        if (m_bootSessionUUID.decode(decoder) != bootSessionUUIDString())
++        // A distributable artifact is meant to survive reboots, so the per-boot
++        // bootSessionUUID gate is intentionally skipped for it. Default (local
++        // cache) artifacts keep the original behavior and reject on a mismatch.
++        if (!m_isDistributable && m_bootSessionUUID.decode(decoder) != bootSessionUUIDString())
+             return false;
+         return true;
+     }
+ 
+ private:
+     uint32_t m_cacheVersion;
++    bool m_isDistributable;
+     CachedString m_bootSessionUUID;
+     CachedCodeBlockTag m_tag;
+ };
+@@ -2537,7 +2576,10 @@ private:
+     {
+         SourceCodeKey decodedKey;
+         m_key.decode(decoder, decodedKey);
+-        return decodedKey == key;
++        // isCompatibleWithBytecodeCacheKey() falls back to operator== unless the
++        // artifact was source-stripped, in which case the (absent) source string
++        // is excluded from the comparison.
++        return decodedKey.isCompatibleWithBytecodeCacheKey(key);
+     }
+ 
+     bool decode(Decoder& decoder, std::pair<SourceCodeKey, UnlinkedCodeBlockType*>& result) const
+@@ -2599,11 +2641,11 @@ void encodeCodeBlock(Encoder& encoder, const SourceCodeKey& key, const UnlinkedC
+     entry->encode(encoder, { key, jsCast<const UnlinkedCodeBlockType*>(codeBlock) });
+ }
+ 
+-RefPtr<CachedBytecode> encodeCodeBlock(VM& vm, const SourceCodeKey& key, const UnlinkedCodeBlock* codeBlock, FileSystem::FileHandle& fileHandle, BytecodeCacheError& error)
++RefPtr<CachedBytecode> encodeCodeBlock(VM& vm, const SourceCodeKey& key, const UnlinkedCodeBlock* codeBlock, FileSystem::FileHandle& fileHandle, BytecodeCacheError& error, BytecodeCacheOptions options)
+ {
+     const ClassInfo* classInfo = codeBlock->classInfo();
+ 
+-    Encoder encoder(vm, fileHandle);
++    Encoder encoder(vm, fileHandle, options);
+     if (classInfo == UnlinkedProgramCodeBlock::info())
+         encodeCodeBlock<UnlinkedProgramCodeBlock>(encoder, key, codeBlock);
+     else if (classInfo == UnlinkedModuleProgramCodeBlock::info())
+@@ -2614,11 +2656,11 @@ RefPtr<CachedBytecode> encodeCodeBlock(VM& vm, const SourceCodeKey& key, const U
+     return encoder.release(error);
+ }
+ 
+-RefPtr<CachedBytecode> encodeCodeBlock(VM& vm, const SourceCodeKey& key, const UnlinkedCodeBlock* codeBlock)
++RefPtr<CachedBytecode> encodeCodeBlock(VM& vm, const SourceCodeKey& key, const UnlinkedCodeBlock* codeBlock, BytecodeCacheOptions options)
+ {
+     BytecodeCacheError error;
+     FileSystem::FileHandle invalidFileHandle;
+-    return encodeCodeBlock(vm, key, codeBlock, invalidFileHandle, error);
++    return encodeCodeBlock(vm, key, codeBlock, invalidFileHandle, error, options);
+ }
+ 
+ RefPtr<CachedBytecode> encodeFunctionCodeBlock(VM& vm, const UnlinkedFunctionCodeBlock* codeBlock, BytecodeCacheError& error)
+@@ -2639,7 +2681,9 @@ UnlinkedCodeBlock* decodeCodeBlockImpl(VM& vm, const SourceCodeKey& key, Ref<Cac
+         if (!cachedEntry->decode(decoder.get(), entry))
+             return nullptr;
+     }
+-    if (entry.first != key)
++    // For a source-stripped artifact the decoded key carries no source string,
++    // so validate against the runtime key ignoring that component.
++    if (!entry.first.isCompatibleWithBytecodeCacheKey(key))
+         return nullptr;
+     return entry.second;
+ }
+diff --git a/Source/JavaScriptCore/runtime/CachedTypes.h b/Source/JavaScriptCore/runtime/CachedTypes.h
+index 9fa7fb4a2f..5aea5b147d 100644
+--- a/Source/JavaScriptCore/runtime/CachedTypes.h
++++ b/Source/JavaScriptCore/runtime/CachedTypes.h
+@@ -111,8 +111,26 @@ private:
+     RefPtr<SourceProvider> m_provider;
+ };
+ 
+-JS_EXPORT_PRIVATE RefPtr<CachedBytecode> encodeCodeBlock(VM&, const SourceCodeKey&, const UnlinkedCodeBlock*);
+-JS_EXPORT_PRIVATE RefPtr<CachedBytecode> encodeCodeBlock(VM&, const SourceCodeKey&, const UnlinkedCodeBlock*, FileSystem::FileHandle&, BytecodeCacheError&);
++// Options controlling how a bytecode artifact is serialized. The default value
++// ({ false, false }) reproduces the historical local-cache behavior exactly and
++// is what every existing caller gets. Cottontail opts in to the shipping/
++// distributable behavior by threading a non-default value through the encode /
++// generate entry points.
++struct BytecodeCacheOptions {
++    // When true, the artifact is meant to be shipped and reused across reboots:
++    // the per-boot bootSessionUUID gate is skipped at load time, leaving the
++    // per-binary JSC image version (m_cacheVersion) as the sole validity gate.
++    bool distributable { false };
++
++    // When true, the program/module source text is NOT embedded in the artifact
++    // (only offsets/positions are kept). Functions restored from such an artifact
++    // report `[native code]` from Function.prototype.toString, and load-time
++    // source-key validation ignores the (absent) source string.
++    bool stripSource { false };
++};
++
++JS_EXPORT_PRIVATE RefPtr<CachedBytecode> encodeCodeBlock(VM&, const SourceCodeKey&, const UnlinkedCodeBlock*, BytecodeCacheOptions = { });
++JS_EXPORT_PRIVATE RefPtr<CachedBytecode> encodeCodeBlock(VM&, const SourceCodeKey&, const UnlinkedCodeBlock*, FileSystem::FileHandle&, BytecodeCacheError&, BytecodeCacheOptions = { });
+ 
+ UnlinkedCodeBlock* decodeCodeBlockImpl(VM&, const SourceCodeKey&, Ref<CachedBytecode>);
+ 
+diff --git a/Source/JavaScriptCore/runtime/CodeCache.cpp b/Source/JavaScriptCore/runtime/CodeCache.cpp
+index f13824d780..af8d14cd0a 100644
+--- a/Source/JavaScriptCore/runtime/CodeCache.cpp
++++ b/Source/JavaScriptCore/runtime/CodeCache.cpp
+@@ -306,9 +306,9 @@ SourceCodeKey sourceCodeKeyForSerializedModule(VM& vm, const SourceCode& sourceC
+     return sourceCodeKeyForSerializedBytecode(vm, sourceCode, SourceCodeType::ModuleType, StrictModeLexicallyScopedFeature, scriptMode, { });
+ }
+ 
+-RefPtr<CachedBytecode> serializeBytecode(VM& vm, UnlinkedCodeBlock* codeBlock, const SourceCode& source, SourceCodeType codeType, LexicallyScopedFeatures lexicallyScopedFeatures, JSParserScriptMode scriptMode, FileSystem::FileHandle& fileHandle, BytecodeCacheError& error, OptionSet<CodeGenerationMode> codeGenerationMode)
++RefPtr<CachedBytecode> serializeBytecode(VM& vm, UnlinkedCodeBlock* codeBlock, const SourceCode& source, SourceCodeType codeType, LexicallyScopedFeatures lexicallyScopedFeatures, JSParserScriptMode scriptMode, FileSystem::FileHandle& fileHandle, BytecodeCacheError& error, OptionSet<CodeGenerationMode> codeGenerationMode, BytecodeCacheOptions cacheOptions)
+ {
+-    return encodeCodeBlock(vm, sourceCodeKeyForSerializedBytecode(vm, source, codeType, lexicallyScopedFeatures, scriptMode, codeGenerationMode), codeBlock, fileHandle, error);
++    return encodeCodeBlock(vm, sourceCodeKeyForSerializedBytecode(vm, source, codeType, lexicallyScopedFeatures, scriptMode, codeGenerationMode), codeBlock, fileHandle, error, cacheOptions);
+ }
+ 
+ }
+diff --git a/Source/JavaScriptCore/runtime/CodeCache.h b/Source/JavaScriptCore/runtime/CodeCache.h
+index 1dcc9f0614..108914dc37 100644
+--- a/Source/JavaScriptCore/runtime/CodeCache.h
++++ b/Source/JavaScriptCore/runtime/CodeCache.h
+@@ -265,7 +265,7 @@ UnlinkedProgramCodeBlock* recursivelyGenerateUnlinkedCodeBlockForProgram(VM&, co
+ UnlinkedModuleProgramCodeBlock* recursivelyGenerateUnlinkedCodeBlockForModuleProgram(VM&, const SourceCode&, LexicallyScopedFeatures, JSParserScriptMode, OptionSet<CodeGenerationMode>, ParserError&, EvalContextType);
+ 
+ void writeCodeBlock(const SourceCodeKey&, const SourceCodeValue&);
+-RefPtr<CachedBytecode> serializeBytecode(VM&, UnlinkedCodeBlock*, const SourceCode&, SourceCodeType, LexicallyScopedFeatures, JSParserScriptMode, FileSystem::FileHandle&, BytecodeCacheError&, OptionSet<CodeGenerationMode>);
++RefPtr<CachedBytecode> serializeBytecode(VM&, UnlinkedCodeBlock*, const SourceCode&, SourceCodeType, LexicallyScopedFeatures, JSParserScriptMode, FileSystem::FileHandle&, BytecodeCacheError&, OptionSet<CodeGenerationMode>, BytecodeCacheOptions = { });
+ SourceCodeKey sourceCodeKeyForSerializedProgram(VM&, const SourceCode&);
+ SourceCodeKey sourceCodeKeyForSerializedModule(VM&, const SourceCode&);
+ 
+diff --git a/Source/JavaScriptCore/runtime/Completion.cpp b/Source/JavaScriptCore/runtime/Completion.cpp
+index f369af2762..f264588e64 100644
+--- a/Source/JavaScriptCore/runtime/Completion.cpp
++++ b/Source/JavaScriptCore/runtime/Completion.cpp
+@@ -87,7 +87,7 @@ bool checkModuleSyntax(JSGlobalObject* globalObject, const SourceCode& source, P
+     return !!moduleAnalyzer.analyze(*moduleProgramNode);
+ }
+ 
+-RefPtr<CachedBytecode> generateProgramBytecode(VM& vm, const SourceCode& source, FileSystem::FileHandle& fileHandle, BytecodeCacheError& error)
++RefPtr<CachedBytecode> generateProgramBytecode(VM& vm, const SourceCode& source, FileSystem::FileHandle& fileHandle, BytecodeCacheError& error, BytecodeCacheOptions cacheOptions)
+ {
+     JSLockHolder lock(vm);
+     RELEASE_ASSERT(vm.atomStringTable() == Thread::currentSingleton().atomStringTable());
+@@ -103,10 +103,10 @@ RefPtr<CachedBytecode> generateProgramBytecode(VM& vm, const SourceCode& source,
+     if (!unlinkedCodeBlock)
+         return nullptr;
+ 
+-    return serializeBytecode(vm, unlinkedCodeBlock, source, SourceCodeType::ProgramType, lexicallyScopedFeatures, scriptMode, fileHandle, error, { });
++    return serializeBytecode(vm, unlinkedCodeBlock, source, SourceCodeType::ProgramType, lexicallyScopedFeatures, scriptMode, fileHandle, error, { }, cacheOptions);
+ }
+ 
+-RefPtr<CachedBytecode> generateModuleBytecode(VM& vm, const SourceCode& source, FileSystem::FileHandle& fileHandle, BytecodeCacheError& error)
++RefPtr<CachedBytecode> generateModuleBytecode(VM& vm, const SourceCode& source, FileSystem::FileHandle& fileHandle, BytecodeCacheError& error, BytecodeCacheOptions cacheOptions)
+ {
+     JSLockHolder lock(vm);
+     RELEASE_ASSERT(vm.atomStringTable() == Thread::currentSingleton().atomStringTable());
+@@ -121,7 +121,7 @@ RefPtr<CachedBytecode> generateModuleBytecode(VM& vm, const SourceCode& source,
+         error = parserError;
+     if (!unlinkedCodeBlock)
+         return nullptr;
+-    return serializeBytecode(vm, unlinkedCodeBlock, source, SourceCodeType::ModuleType, lexicallyScopedFeatures, scriptMode, fileHandle, error, { });
++    return serializeBytecode(vm, unlinkedCodeBlock, source, SourceCodeType::ModuleType, lexicallyScopedFeatures, scriptMode, fileHandle, error, { }, cacheOptions);
+ }
+ 
+ JSValue evaluate(JSGlobalObject* globalObject, const SourceCode& source, JSValue thisValue, NakedPtr<Exception>& returnedException)
+diff --git a/Source/JavaScriptCore/runtime/Completion.h b/Source/JavaScriptCore/runtime/Completion.h
+index 1815cec052..9442d177aa 100644
+--- a/Source/JavaScriptCore/runtime/Completion.h
++++ b/Source/JavaScriptCore/runtime/Completion.h
+@@ -22,6 +22,7 @@
+ 
+ #pragma once
+ 
++#include <JavaScriptCore/CachedTypes.h>
+ #include <JavaScriptCore/CallData.h>
+ #include <JavaScriptCore/Identifier.h>
+ #include <JavaScriptCore/JSCJSValue.h>
+@@ -46,8 +47,8 @@ JS_EXPORT_PRIVATE bool checkSyntax(VM&, const SourceCode&, ParserError&);
+ JS_EXPORT_PRIVATE bool checkSyntax(JSGlobalObject*, const SourceCode&, JSValue* exception = nullptr);
+ JS_EXPORT_PRIVATE bool checkModuleSyntax(JSGlobalObject*, const SourceCode&, ParserError&);
+ 
+-JS_EXPORT_PRIVATE RefPtr<CachedBytecode> generateProgramBytecode(VM&, const SourceCode&, FileSystem::FileHandle&, BytecodeCacheError&);
+-JS_EXPORT_PRIVATE RefPtr<CachedBytecode> generateModuleBytecode(VM&, const SourceCode&, FileSystem::FileHandle&, BytecodeCacheError&);
++JS_EXPORT_PRIVATE RefPtr<CachedBytecode> generateProgramBytecode(VM&, const SourceCode&, FileSystem::FileHandle&, BytecodeCacheError&, BytecodeCacheOptions = { });
++JS_EXPORT_PRIVATE RefPtr<CachedBytecode> generateModuleBytecode(VM&, const SourceCode&, FileSystem::FileHandle&, BytecodeCacheError&, BytecodeCacheOptions = { });
+ 
+ JS_EXPORT_PRIVATE JSValue evaluate(JSGlobalObject*, const SourceCode&, JSValue thisValue, NakedPtr<Exception>& returnedException);
+ inline JSValue evaluate(JSGlobalObject* globalObject, const SourceCode& sourceCode, JSValue thisValue = JSValue())
+diff --git a/Source/JavaScriptCore/runtime/FunctionExecutable.cpp b/Source/JavaScriptCore/runtime/FunctionExecutable.cpp
+index 7f87213367..aa376e7f33 100644
+--- a/Source/JavaScriptCore/runtime/FunctionExecutable.cpp
++++ b/Source/JavaScriptCore/runtime/FunctionExecutable.cpp
+@@ -183,7 +183,12 @@ JSString* FunctionExecutable::toStringSlow(JSGlobalObject* globalObject)
+         return cache(::JSC::asString(value));
+     };
+ 
+-    if (isBuiltinFunction())
++    // Builtins have no user-visible source, and functions restored from a
++    // source-stripped (distributable) bytecode artifact have had their source
++    // removed. Both report the standard `[native code]` body rather than slicing
++    // a synthetic/empty provider (which would yield garbage).
++    bool hasStrippedSource = source().provider() && source().provider()->isSourceStripped();
++    if (isBuiltinFunction() || hasStrippedSource)
+         return cacheIfNoException(jsMakeNontrivialString(globalObject, "function "_s, name().string(), "() {\n    [native code]\n}"_s));
+ 
+     if (isClass())
