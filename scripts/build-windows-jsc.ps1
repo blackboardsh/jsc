@@ -114,9 +114,28 @@ tar -xzf $archive -C $icuSource --strip-components=1
 Copy-Item "$icuSource/source/common/unicode/*" "$icuPrefix/include/unicode/" -Recurse -Force
 Copy-Item "$icuSource/source/i18n/unicode/*" "$icuPrefix/include/unicode/" -Recurse -Force
 
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-$vsInstall = (& $vswhere -latest -property installationPath).Trim()
+$vswhereCandidates = @()
+$programFilesX86 = ${env:ProgramFiles(x86)}
+if ($programFilesX86) {
+  $vswhereCandidates += Join-Path $programFilesX86 'Microsoft Visual Studio/Installer/vswhere.exe'
+}
+if ($env:ProgramFiles) {
+  $vswhereCandidates += Join-Path $env:ProgramFiles 'Microsoft Visual Studio/Installer/vswhere.exe'
+}
+$vswhereCommand = Get-Command vswhere.exe -ErrorAction SilentlyContinue
+if ($vswhereCommand) { $vswhereCandidates += $vswhereCommand.Source }
+$vswhere = $vswhereCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $vswhere) { throw 'Could not find vswhere.exe' }
+
+$vsInstallOutput = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+$vswhereExitCode = $LASTEXITCODE
+$vsInstall = $vsInstallOutput | Select-Object -First 1
+if ($vswhereExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($vsInstall)) {
+  throw 'Could not find Visual Studio C++ x64 build tools'
+}
+$vsInstall = $vsInstall.Trim()
 $vsDevCmd = Join-Path $vsInstall 'Common7/Tools/VsDevCmd.bat'
+if (-not (Test-Path $vsDevCmd)) { throw "VsDevCmd.bat not found at $vsDevCmd" }
 $msysBash = 'C:\tools\msys64\usr\bin\bash.exe'
 if (-not (Test-Path $msysBash)) { throw "MSYS2 bash not found at $msysBash" }
 $icuBuild = Join-Path $temp 'icu-static-build'
