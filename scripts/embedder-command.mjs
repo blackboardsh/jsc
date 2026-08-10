@@ -43,6 +43,8 @@ export function rewriteCompileCommand({
     rewritten = ensureCompileDefinition(
       rewritten,
       "STATICALLY_LINKED_WITH_JavaScriptCore",
+      source,
+      platform,
     );
   }
   return rewritten;
@@ -124,6 +126,20 @@ function hasCompileDefinition(command, name) {
   ).test(command);
 }
 
-function ensureCompileDefinition(command, name) {
-  return hasCompileDefinition(command, name) ? command : `${command} /D${name}`;
+function ensureCompileDefinition(command, name, source, platform) {
+  if (hasCompileDefinition(command, name)) return command;
+
+  const definition = `/D${name}`;
+  const separator = command.match(/(^|\s)--(?=\s|$)/);
+  if (separator) {
+    const insertion = separator.index + separator[1].length;
+    return `${command.slice(0, insertion)}${definition} ${command.slice(insertion)}`;
+  }
+
+  const sourceToken = quoteShellValue(source, platform);
+  const insertion = command.indexOf(sourceToken);
+  if (insertion < 0) {
+    throw new Error(`Could not insert ${definition} before the compiler source`);
+  }
+  return `${command.slice(0, insertion)}${definition} ${command.slice(insertion)}`;
 }

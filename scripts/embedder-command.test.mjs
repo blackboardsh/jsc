@@ -39,7 +39,23 @@ test("rewrites a relative Windows source using its basename fallback", () => {
 
   assert.equal(
     rewritten,
-    'clang-cl.exe /Fo"D:/build/cottontail-jsc-embedder.obj" /c "D:/source/bridge/cottontail-jsc-embedder.cpp" /DSTATICALLY_LINKED_WITH_JavaScriptCore',
+    'clang-cl.exe /Fo"D:/build/cottontail-jsc-embedder.obj" /c /DSTATICALLY_LINKED_WITH_JavaScriptCore "D:/source/bridge/cottontail-jsc-embedder.cpp"',
+  );
+});
+
+test("inserts the Windows static definition before an end-of-options marker", () => {
+  const rewritten = rewriteCompileCommand({
+    command: 'clang-cl.exe /Foout\\old.obj /c -- "D:\\src\\source.cpp"',
+    directory: "D:/build",
+    originalSource: "D:/src/source.cpp",
+    source: "D:/src/embedder.cpp",
+    object: "D:/build/embedder.obj",
+    platform: "win32",
+  });
+
+  assert.equal(
+    rewritten,
+    'clang-cl.exe /Fo"D:/build/embedder.obj" /c /DSTATICALLY_LINKED_WITH_JavaScriptCore -- "D:/src/embedder.cpp"',
   );
 });
 
