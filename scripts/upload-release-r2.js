@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 
-import { createHash, createHmac } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+
+import {
+  ensureSharedObject,
+  publishImmutableRevision,
+  revisionObjectKeys,
+} from './immutable-release.js';
+import { createR2Client, sha256 } from './r2-client.js';
 
 const dryRun = process.argv.includes('--dry-run') || process.env.JSC_R2_DRY_RUN === '1';
 const bucket = 'electrobun-artifacts';
@@ -20,54 +26,6 @@ function fail(message) {
   console.error(message);
   process.exit(1);
 }
-function sha256(value) {
-  return createHash('sha256').update(value).digest('hex');
-}
-function hmac(key, value) {
-  return createHmac('sha256', key).update(value).digest();
-}
-function awsEncode(value) {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
-    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
-  );
-}
-function signingHeaders({ accountId, accessKeyId, secretAccessKey, key, body, contentType, cacheControl }) {
-  const endpoint = new URL(`https://${accountId}.r2.cloudflarestorage.com`);
-  const canonicalUri = `/${[bucket, ...key.split('/')].map(awsEncode).join('/')}`;
-  const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
-  const date = amzDate.slice(0, 8);
-  const payloadHash = sha256(body);
-  const canonicalHeaders = `cache-control:${cacheControl}\ncontent-type:${contentType}\nhost:${endpoint.host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
-  const signedHeaders = 'cache-control;content-type;host;x-amz-content-sha256;x-amz-date';
-  const canonicalRequest = ['PUT', canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
-  const scope = `${date}/auto/s3/aws4_request`;
-  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256(canonicalRequest)].join('\n');
-  const dateKey = hmac(Buffer.from(`AWS4${secretAccessKey}`), date);
-  const signingKey = hmac(hmac(hmac(dateKey, 'auto'), 's3'), 'aws4_request');
-  const signature = createHmac('sha256', signingKey).update(stringToSign).digest('hex');
-  return {
-    url: new URL(canonicalUri, endpoint).href,
-    headers: {
-      Authorization: `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
-      'Cache-Control': cacheControl,
-      'Content-Type': contentType,
-      'x-amz-content-sha256': payloadHash,
-      'x-amz-date': amzDate,
-    },
-  };
-}
-
-async function put(config, key, body, contentType, cacheControl) {
-  if (dryRun) {
-    console.log(`dry-run PUT ${key} (${body.length} bytes)`);
-    return;
-  }
-  const request = signingHeaders({ ...config, key, body, contentType, cacheControl });
-  const response = await fetch(request.url, { method: 'PUT', headers: request.headers, body });
-  if (!response.ok) throw new Error(`R2 upload failed for ${key}: ${response.status} ${await response.text()}`);
-  console.log(`uploaded ${key}`);
-}
-
 if (process.env.CIRCLECI === 'true' && process.env.CIRCLE_BRANCH !== 'main') {
   console.log(`Skipping R2 upload from ${process.env.CIRCLE_BRANCH ?? '(unknown branch)'}`);
   process.exit(0);
@@ -128,21 +86,53 @@ const manifestObject = {
   }])),
 };
 const manifest = Buffer.from(`${JSON.stringify(manifestObject, null, 2)}\n`);
-const config = {
+const r2 = createR2Client({
   accountId: process.env.JSC_R2_ACCOUNT_ID ?? 'dry-run-account',
   accessKeyId: process.env.JSC_R2_ACCESS_KEY_ID ?? 'dry-run-key',
   secretAccessKey: process.env.JSC_R2_SECRET_ACCESS_KEY ?? 'dry-run-secret',
-};
+  bucket,
+  dryRun,
+});
 const immutable = 'public, max-age=31536000, immutable';
 const mutable = 'no-cache, no-store, must-revalidate';
 
-await put(config, `${rootPrefix}/icu/70.1/icudt70l.dat`, readFileSync('release/icudt70l-macos-arm64.dat'), 'application/octet-stream', immutable);
-for (const artifact of artifacts) {
-  await put(config, snapshotKey(artifact.platform), artifact.body, 'application/gzip', immutable);
-  await put(config, `${snapshotKey(artifact.platform)}.sha256`, Buffer.from(`${artifact.checksum}  jsc.tar.gz\n`), 'text/plain; charset=utf-8', immutable);
+const revisionEntries = artifacts.flatMap((artifact) => [{
+  key: snapshotKey(artifact.platform),
+  body: artifact.body,
+  contentType: 'application/gzip',
+}, {
+  key: `${snapshotKey(artifact.platform)}.sha256`,
+  body: Buffer.from(`${artifact.checksum}  jsc.tar.gz\n`),
+  contentType: 'text/plain; charset=utf-8',
+}]);
+revisionEntries.push({
+  key: `${rootPrefix}/builds/${revision}/manifest.json`,
+  body: manifest,
+  contentType: 'application/json; charset=utf-8',
+});
+const expectedRevisionKeys = revisionObjectKeys(rootPrefix, revision, artifacts.map(({ platform }) => platform));
+if (revisionEntries.some(({ key }, index) => key !== expectedRevisionKeys[index])) {
+  fail('Internal error: immutable JSC revision object set is inconsistent');
 }
-await put(config, `${rootPrefix}/builds/${revision}/manifest.json`, manifest, 'application/json; charset=utf-8', immutable);
-await put(config, `${rootPrefix}/releases/${metadata.webkitRef}/manifest.json`, manifest, 'application/json; charset=utf-8', mutable);
-await put(config, `${rootPrefix}/latest.json`, manifest, 'application/json; charset=utf-8', mutable);
+
+await publishImmutableRevision(
+  revisionEntries,
+  r2.exists,
+  async ({ key, body, contentType }, options) =>
+    await r2.put(key, body, contentType, immutable, options),
+  async () => {
+    const icuKey = `${rootPrefix}/icu/70.1/icudt70l.dat`;
+    await ensureSharedObject(
+      { key: icuKey, body: readFileSync('release/icudt70l-macos-arm64.dat') },
+      expectedDataSha256,
+      r2.exists,
+      r2.get,
+      async ({ key, body }, options) =>
+        await r2.put(key, body, 'application/octet-stream', immutable, options),
+    );
+  },
+);
+await r2.put(`${rootPrefix}/releases/${metadata.webkitRef}/manifest.json`, manifest, 'application/json; charset=utf-8', mutable);
+await r2.put(`${rootPrefix}/latest.json`, manifest, 'application/json; charset=utf-8', mutable);
 
 console.log(JSON.stringify({ webkitRef: metadata.webkitRef, revision, platforms: Object.keys(matrix) }, null, 2));

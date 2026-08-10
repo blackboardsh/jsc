@@ -7,8 +7,6 @@ on:
   pull_request:
     branches:
       - main
-  schedule:
-    - cron: "17 9 * * 1"
   workflow_dispatch:
     inputs:
       webkit_ref:
@@ -51,6 +49,8 @@ jobs:
         run: >-
           node --test
           scripts/embedder-command.test.mjs
+          scripts/immutable-release.test.mjs
+          scripts/r2-client.test.mjs
           scripts/verify-windows-static-link-contract.test.mjs
 
   resolve-webkit:

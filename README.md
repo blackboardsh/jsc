@@ -44,9 +44,9 @@ selection orders tags by upstream commit date rather than the numeric-looking ta
 the workflow uses its built-in `GITHUB_TOKEN` to query GitHub's GraphQL API. No
 custom GitHub token is required.
 
-The committed workflow checks for a new upstream tag every Monday and can also
-be run manually from `main`. The same fan-in and R2 publishing gate is used for
-scheduled, pushed, and manual workflows.
+The workflow can also be run manually from `main`. A new publication requires a
+new JSC repository commit: the repository revision is the immutable build key,
+so rebuilding the same commit (including with a newer WebKit tag) is rejected.
 
 The R2 publisher runs only after every build and Intl smoke test passes. It
 uploads to the `electrobun-artifacts` bucket under `jsc/` and requires these
