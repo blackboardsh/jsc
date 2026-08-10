@@ -29,7 +29,7 @@ export function rewriteCompileCommand({
     throw new Error(`Could not replace compiler output in command: ${command}`);
   }
 
-  const rewritten = replaceSourceToken(
+  let rewritten = replaceSourceToken(
     command,
     originalSource,
     source,
@@ -38,6 +38,12 @@ export function rewriteCompileCommand({
   );
   if (!containsPathToken(rewritten, source, directory, platform)) {
     throw new Error(`Rewritten command does not contain the embedder source: ${rewritten}`);
+  }
+  if (platform === "win32") {
+    rewritten = ensureCompileDefinition(
+      rewritten,
+      "STATICALLY_LINKED_WITH_JavaScriptCore",
+    );
   }
   return rewritten;
 }
@@ -109,4 +115,15 @@ function pathVariants(value, directory, platform) {
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasCompileDefinition(command, name) {
+  const definition = escapeRegExp(name);
+  return new RegExp(
+    `(?:^|\\s)["']?(?:-D|/D)${definition}(?:=1)?["']?(?=\\s|$)`,
+  ).test(command);
+}
+
+function ensureCompileDefinition(command, name) {
+  return hasCompileDefinition(command, name) ? command : `${command} /D${name}`;
 }

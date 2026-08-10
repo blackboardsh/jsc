@@ -260,6 +260,20 @@ Copy-Item (Join-Path $root 'bridge/icu-symbols.inc') "$packageDir/share/cottonta
 [IO.File]::WriteAllText("$packageDir/share/cottontail-jsc/ICU_ABI", "ICU_ABI_FLOOR=70`n", $utf8)
 $embedderAbi = (Get-Content $embedderManifest -Raw | ConvertFrom-Json).abiVersion
 [IO.File]::WriteAllText("$packageDir/share/cottontail-jsc/EMBEDDER_ABI", "CT_JSC_EMBEDDER_ABI_VERSION=$embedderAbi`n", $utf8)
+$packagedEmbedderLibrary = Join-Path $packageDir 'lib/CottontailJSCEmbedder.lib'
+$packagedStaticLibraries = @(
+  (Join-Path $packageDir 'lib/JavaScriptCore.lib'),
+  (Join-Path $packageDir 'lib/WTF.lib'),
+  (Join-Path $packageDir 'lib/bmalloc.lib'),
+  (Join-Path $packageDir 'lib/cottontail-icu/icudata.lib'),
+  (Join-Path $packageDir 'lib/cottontail-icu/icui18n.lib'),
+  (Join-Path $packageDir 'lib/cottontail-icu/icuuc.lib')
+)
+& node (Join-Path $root 'scripts/verify-windows-static-link-contract.js') `
+  'C:\LLVM\bin\llvm-nm.exe' `
+  $packagedEmbedderLibrary `
+  @packagedStaticLibraries
+if ($LASTEXITCODE -ne 0) { throw 'Windows static embedder link contract verification failed' }
 Copy-Item "$buildDir/cmakeconfig.h" "$packageDir/include/"
 Copy-Item "$buildDir/JavaScriptCore/Headers/JavaScriptCore/*" "$packageDir/include/JavaScriptCore/" -Recurse
 Copy-Item "$buildDir/WTF/Headers/wtf/*" "$packageDir/include/wtf/" -Recurse

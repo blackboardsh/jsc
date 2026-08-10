@@ -23,6 +23,7 @@ test("rewrites Windows commands when compile database and command use different 
 
   assert.match(rewritten, /bridge\\cottontail-jsc-embedder\.cpp/);
   assert.match(rewritten, /cottontail-embedder\\cottontail-jsc-embedder\.obj/);
+  assert.match(rewritten, /\/DSTATICALLY_LINKED_WITH_JavaScriptCore/);
   assert.doesNotMatch(rewritten, /JavaScriptCore\\jsc\.cpp/);
 });
 
@@ -38,7 +39,23 @@ test("rewrites a relative Windows source using its basename fallback", () => {
 
   assert.equal(
     rewritten,
-    'clang-cl.exe /Fo"D:/build/cottontail-jsc-embedder.obj" /c "D:/source/bridge/cottontail-jsc-embedder.cpp"',
+    'clang-cl.exe /Fo"D:/build/cottontail-jsc-embedder.obj" /c "D:/source/bridge/cottontail-jsc-embedder.cpp" /DSTATICALLY_LINKED_WITH_JavaScriptCore',
+  );
+});
+
+test("does not duplicate the Windows static JavaScriptCore definition", () => {
+  const rewritten = rewriteCompileCommand({
+    command: "clang-cl.exe /DSTATICALLY_LINKED_WITH_JavaScriptCore /Foout\\old.obj /c source.cpp",
+    directory: "D:/build",
+    originalSource: "source.cpp",
+    source: "embedder.cpp",
+    object: "embedder.obj",
+    platform: "win32",
+  });
+
+  assert.equal(
+    rewritten.match(/STATICALLY_LINKED_WITH_JavaScriptCore/g)?.length,
+    1,
   );
 });
 

@@ -32,8 +32,31 @@ env:
   WINDOWS_MSVC_ATTRIBUTE_PATCH_SHA256: 75e5d15551191057f098e976c8f6b3242a36aaf38d03058ab5aad9da3763978f
 
 jobs:
+  script-tests:
+    name: Test JSC build scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out JSC build repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.11.1
+          package-manager-cache: false
+
+      - name: Run build-script contract tests
+        run: >-
+          node --test
+          scripts/embedder-command.test.mjs
+          scripts/verify-windows-static-link-contract.test.mjs
+
   resolve-webkit:
     name: Resolve upstream WebKit release
+    needs:
+      - script-tests
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -216,6 +239,7 @@ jobs:
   publish:
     name: Publish complete JSC matrix to R2
     needs:
+      - script-tests
       - resolve-webkit
       - build-unix
       - build-windows
