@@ -49,3 +49,10 @@ if git -C "$checkout" apply --reverse --check "$bytecode_patch" 2>/dev/null; the
 else
     git -C "$checkout" apply "$bytecode_patch"
 fi
+
+tree_patch="$root/patches/red-black-tree-detach-node.patch"
+if git -C "$checkout" apply --reverse --check "$tree_patch" 2>/dev/null; then
+    echo "Red-black tree detached-node lifetime patch is already present"
+else
+    git -C "$checkout" apply "$tree_patch"
+fi

@@ -88,6 +88,19 @@ try {
     if ($cmakePatchApplyExitCode -ne 0) { throw 'WebKit CMake compatibility patch failed' }
   }
 
+  $treePatch = Join-Path $root 'patches/red-black-tree-detach-node.patch'
+  $ErrorActionPreference = 'Continue'
+  git apply --reverse --check $treePatch 2>$null
+  $treePatchReverseExitCode = $LASTEXITCODE
+  $ErrorActionPreference = 'Stop'
+  if ($treePatchReverseExitCode -ne 0) {
+    $ErrorActionPreference = 'Continue'
+    git apply $treePatch
+    $treePatchApplyExitCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($treePatchApplyExitCode -ne 0) { throw 'Red-black tree detached-node lifetime patch failed' }
+  }
+
   $windowsSystemIcuPatch = Join-Path $root 'patches/windows-system-icu.patch'
   $ErrorActionPreference = 'Continue'
   git apply --reverse --check $windowsSystemIcuPatch 2>$null

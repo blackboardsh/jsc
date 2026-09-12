@@ -1,0 +1,8 @@
+diff --git a/Source/WTF/wtf/RedBlackTree.h b/Source/WTF/wtf/RedBlackTree.h
+--- a/Source/WTF/wtf/RedBlackTree.h
++++ b/Source/WTF/wtf/RedBlackTree.h
+@@ -289,2 +289,4 @@ public:
++        // Detached nodes must not retain checked references to live tree nodes.
++        z->reset();
+         return z;
+     }

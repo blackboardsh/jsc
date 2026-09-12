@@ -87,3 +87,30 @@ The first invocation needs the same host dependencies as the corresponding
 GitHub Actions build. Set `COTTONTAIL_ROOT` when the Cottontail checkout is not
 at `../cottontail`. Set `DASH_LOCAL_REBUILD_JSC=1` or pass `--force` to rebuild
 an otherwise current SDK.
+
+For the Linux timer lifetime fix, an existing pinned Cottontail SDK can also be
+used for a small local static-library rebuild:
+
+```sh
+node scripts/rebuild-linux-runloop.js /absolute/path/to/published-sdk /new/local-sdk /absolute/path/to/cottontail/scripts/jsc-manifest.json
+node scripts/test-red-black-tree.js /new/local-sdk
+```
+
+This verifies the SDK's source revision and published vendoring stamp, downloads
+three source files at that exact WebKit commit, applies the maintained tree patch,
+and recompiles `RunLoopGeneric.cpp.o` against the SDK's generated headers. It
+copies the SDK, records input/output hashes and compiler arguments in
+`share/cottontail-jsc/runloop-rebuild.json`, and changes only the copied static
+timer object and tree header. The original SDK and its cached verification stamp
+remain intact. The copied `bin/jsc` shell is unchanged; validate the fix by
+relinking Cottontail against the copied static SDK. This helper is for local
+iteration; the normal SDK build applies the patch to every translation unit.
+
+The native regression exercises checked-pointer deletion and all 120 removal
+orders of a five-node tree, including reuse after removal. Before the fix,
+removing a parent and child then deleting the child first causes the parent's
+destructor to abort. The same retained child reference caused Linux watchdog
+timers to abort while opening editors in Dash Desktop.
+An additional case schedules and stops actual `RunLoop` timers, then destroys
+the child before the retained parent. It validates the linked `libWTF.a`, so a
+patched header paired with a stale compiled timer object still fails the check.

@@ -110,6 +110,10 @@ else
     node -p "require('$root/build-metadata/webkit.json').webkitSha" > "$package_dir/WEBKIT_REVISION"
 fi
 
+if [[ "$TARGET_OS" == linux ]]; then
+    node "$root/scripts/test-red-black-tree.js" "$package_dir"
+fi
+
 archive="$root/release/$ARTIFACT_NAME.tar.gz"
 tar -C "$RUNNER_TEMP" -czf "$archive" "$ARTIFACT_NAME"
 shasum -a 256 "$archive" > "$archive.sha256"
