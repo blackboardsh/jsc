@@ -24,7 +24,8 @@ try {
             `-I${join(sdk, "include")}`, `-I${join(sdk, "include/bmalloc")}`,
             join(root, `tests/${fixture}.cpp`),
             join(sdk, "lib/libWTF.a"), join(sdk, "lib/libbmalloc.a"),
-            "-Wl,--gc-sections", "-pthread", "-ldl", "-o", binary,
+            // bmalloc uses out-of-line atomics on baseline Linux x64.
+            "-Wl,--gc-sections", "-pthread", "-ldl", "-latomic", "-o", binary,
         ], { stdio: "inherit" });
         if (compile.error) throw compile.error;
         if (compile.status !== 0) throw new Error(`${fixture} compile failed: ${compile.status}`);
