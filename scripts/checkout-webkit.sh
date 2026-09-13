@@ -56,3 +56,10 @@ if git -C "$checkout" apply --reverse --check "$tree_patch" 2>/dev/null; then
 else
     git -C "$checkout" apply "$tree_patch"
 fi
+
+watchdog_patch="$root/patches/watchdog-rearm.patch"
+if git -C "$checkout" apply --reverse --check "$watchdog_patch" 2>/dev/null; then
+    echo "Watchdog callback rearming patch is already present"
+else
+    git -C "$checkout" apply "$watchdog_patch"
+fi

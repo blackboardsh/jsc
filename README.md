@@ -88,6 +88,27 @@ GitHub Actions build. Set `COTTONTAIL_ROOT` when the Cottontail checkout is not
 at `../cottontail`. Set `DASH_LOCAL_REBUILD_JSC=1` or pass `--force` to rebuild
 an otherwise current SDK.
 
+On Unix, set `DASH_JSC_BUILD_JOBS` to a positive integer to bound local compiler
+parallelism, for example `DASH_JSC_BUILD_JOBS=4 node scripts/build-local-jsc.js`.
+The SDK uses regular static archives so copied libraries retain their object
+files when consumed outside the WebKit build directory.
+
+The Linux SDK build also runs an execution-watchdog regression:
+
+```sh
+node scripts/test-watchdog.js /absolute/path/to/jsc-sdk
+```
+
+It links the SDK's actual static JSC library and uses the same system ICU
+bridge as the JSC shell. Separate native processes verify that callbacks can
+explicitly reset or clear the execution limit, and that an unchanged false
+return rearms the limit until a later callback interrupts a continuous loop.
+Each process has an external five-second deadline. The watchdog patch is
+applied to all SDK targets; this SDK test runner currently executes on Linux.
+The patch clears the consumed CPU deadline before invoking the callback. This
+prevents an expired deadline from being mistaken for a timer that the callback
+explicitly restarted, while preserving callback-driven reset and clear behavior.
+
 For the Linux timer lifetime fix, an existing pinned Cottontail SDK can also be
 used for a small local static-library rebuild:
 

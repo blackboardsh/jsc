@@ -176,8 +176,10 @@ function sourceFingerprint(manifest, config) {
 		"scripts/build-windows-jsc.ps1",
 		"scripts/checkout-webkit.sh",
 		"scripts/test-red-black-tree.js",
+		"scripts/test-watchdog.js",
 		"tests/red-black-tree-detach.cpp",
 		"tests/runloop-timer-detach.cpp",
+		"tests/watchdog-rearm.cpp",
 		"scripts/prepare-system-icu.sh",
 		"scripts/verify-windows-icu-contract.js",
 	]);

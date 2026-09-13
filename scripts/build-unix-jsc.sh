@@ -49,11 +49,26 @@ else
     platform_cmake_args="-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
 fi
 
+build_args=(--jsc-only --release)
+if [[ -n "${DASH_JSC_BUILD_JOBS:-}" ]]; then
+    if [[ ! "$DASH_JSC_BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "DASH_JSC_BUILD_JOBS must be a positive integer" >&2
+        exit 1
+    fi
+    build_args+=("--makeargs=-j$DASH_JSC_BUILD_JOBS")
+fi
+
+if [[ "${JSC_LOCAL_BUILD:-0}" == 1 ]]; then
+    # build-jsc otherwise ignores changed CMake arguments when a cache exists.
+    # The local helper already skips unchanged SDKs; preserve compiled objects
+    # while regenerating configuration for an actual source/options rebuild.
+    rm -f "$WEBKIT_OUTPUTDIR/CMakeCache.txt" "$WEBKIT_OUTPUTDIR/Release/CMakeCache.txt"
+fi
+
 CFLAGS=-DU_DISABLE_RENAMING=1 CXXFLAGS="$jsc_cxxflags" \
 Tools/Scripts/build-jsc \
-    --jsc-only \
-    --release \
-    --cmakeargs="-DENABLE_STATIC_JSC=ON -DENABLE_API_TESTS=OFF -DENABLE_JIT=ON -DENABLE_DFG_JIT=ON -DENABLE_FTL_JIT=ON -DENABLE_WEBASSEMBLY=ON -DENABLE_WEBASSEMBLY_BBQJIT=ON -DENABLE_WEBASSEMBLY_OMGJIT=ON -DENABLE_SAMPLING_PROFILER=OFF -DENABLE_REMOTE_INSPECTOR=OFF $platform_cmake_args -DICU_INCLUDE_DIR=$ICU_PREFIX/include -DICU_DATA_LIBRARY_RELEASE=$icu_data -DICU_I18N_LIBRARY_RELEASE=$icu_i18n -DICU_UC_LIBRARY_RELEASE=$icu_uc"
+    "${build_args[@]}" \
+    --cmakeargs="-DENABLE_STATIC_JSC=ON -DUSE_THIN_ARCHIVES=OFF -DENABLE_API_TESTS=OFF -DENABLE_JIT=ON -DENABLE_DFG_JIT=ON -DENABLE_FTL_JIT=ON -DENABLE_WEBASSEMBLY=ON -DENABLE_WEBASSEMBLY_BBQJIT=ON -DENABLE_WEBASSEMBLY_OMGJIT=ON -DENABLE_SAMPLING_PROFILER=OFF -DENABLE_REMOTE_INSPECTOR=OFF $platform_cmake_args -DICU_INCLUDE_DIR=$ICU_PREFIX/include -DICU_DATA_LIBRARY_RELEASE=$icu_data -DICU_I18N_LIBRARY_RELEASE=$icu_i18n -DICU_UC_LIBRARY_RELEASE=$icu_uc"
 
 jsc_binary=$(find "$WEBKIT_OUTPUTDIR" -type f -path '*/bin/jsc' -perm -111 -print -quit)
 test -n "$jsc_binary"
@@ -64,7 +79,12 @@ done
 for feature in ENABLE_SAMPLING_PROFILER ENABLE_REMOTE_INSPECTOR; do
     grep -Eq "^#define ${feature} 0$" "$jsc_build_dir/cmakeconfig.h"
 done
-"$jsc_binary" -e 'const n=new Intl.NumberFormat("fr-FR",{useGrouping:false,minimumFractionDigits:1});if(n.format(1.5)!=="1,5")throw new Error("Intl failed");if("e\u0301".normalize("NFC")!=="é")throw new Error("normalization failed");const w=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,7,1,3,97,110,115,0,0,10,6,1,4,0,65,42,11]);if(new WebAssembly.Instance(new WebAssembly.Module(w)).exports.ans()!==42)throw new Error("WebAssembly failed")'
+(
+    # The engine interprets JSC_* variables as runtime options. These existing
+    # local-build controls belong to the surrounding build process only.
+    unset JSC_LOCAL_BUILD JSC_LOCAL_ICU_KEY JSC_ALLOW_WEBKIT_FORK
+    "$jsc_binary" -e 'const n=new Intl.NumberFormat("fr-FR",{useGrouping:false,minimumFractionDigits:1});if(n.format(1.5)!=="1,5")throw new Error("Intl failed");if("e\u0301".normalize("NFC")!=="é")throw new Error("normalization failed");const w=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,7,1,3,97,110,115,0,0,10,6,1,4,0,65,42,11]);if(new WebAssembly.Instance(new WebAssembly.Module(w)).exports.ans()!==42)throw new Error("WebAssembly failed")'
+)
 if [[ "$TARGET_OS" == linux ]]; then
     ! ldd "$jsc_binary" | grep -q 'libicu'
     ! nm -u "$jsc_build_dir/lib/libJavaScriptCore.a" | grep -E ' U u[a-zA-Z0-9_]+_[0-9]+$'
@@ -112,6 +132,7 @@ fi
 
 if [[ "$TARGET_OS" == linux ]]; then
     node "$root/scripts/test-red-black-tree.js" "$package_dir"
+    node "$root/scripts/test-watchdog.js" "$package_dir"
 fi
 
 archive="$root/release/$ARTIFACT_NAME.tar.gz"

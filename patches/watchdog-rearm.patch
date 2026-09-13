@@ -1,0 +1,15 @@
+diff --git a/Source/JavaScriptCore/runtime/Watchdog.cpp b/Source/JavaScriptCore/runtime/Watchdog.cpp
+--- a/Source/JavaScriptCore/runtime/Watchdog.cpp
++++ b/Source/JavaScriptCore/runtime/Watchdog.cpp
+@@ -78,7 +78,11 @@ bool Watchdog::shouldTerminate(JSGlobalObject* globalObject)
+         startTimer(remainingCPUTime);
+         return false;
+     }
+ 
++    // The CPU deadline was consumed. Only a timer started by the callback
++    // below should suppress the automatic rearm after a false result.
++    m_cpuDeadline = noTimeLimit;
++
+     // Note: we should not be holding the lock while calling the callbacks. The callbacks may
+     // call setTimeLimit() which will try to lock as well.
+ 

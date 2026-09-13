@@ -101,6 +101,19 @@ try {
     if ($treePatchApplyExitCode -ne 0) { throw 'Red-black tree detached-node lifetime patch failed' }
   }
 
+  $watchdogPatch = Join-Path $root 'patches/watchdog-rearm.patch'
+  $ErrorActionPreference = 'Continue'
+  git apply --reverse --check $watchdogPatch 2>$null
+  $watchdogPatchReverseExitCode = $LASTEXITCODE
+  $ErrorActionPreference = 'Stop'
+  if ($watchdogPatchReverseExitCode -ne 0) {
+    $ErrorActionPreference = 'Continue'
+    git apply $watchdogPatch
+    $watchdogPatchApplyExitCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($watchdogPatchApplyExitCode -ne 0) { throw 'Watchdog callback rearming patch failed' }
+  }
+
   $windowsSystemIcuPatch = Join-Path $root 'patches/windows-system-icu.patch'
   $ErrorActionPreference = 'Continue'
   git apply --reverse --check $windowsSystemIcuPatch 2>$null
