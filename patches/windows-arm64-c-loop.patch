@@ -236,7 +236,7 @@ diff --git a/Source/cmake/OptionsMSVC.cmake b/Source/cmake/OptionsMSVC.cmake
 index b0f602bfe7b8f..02d4ae0d5429d 100644
 --- a/Source/cmake/OptionsMSVC.cmake
 +++ b/Source/cmake/OptionsMSVC.cmake
-@@ -61,7 +61,12 @@ add_link_options(/INCREMENTAL:NO)
+@@ -61,6 +61,11 @@ add_link_options(/INCREMENTAL:NO)
  string(REGEX MATCH "^[0-9]+" CLANG_CL_MAJOR_VERSION ${CMAKE_CXX_COMPILER_VERSION})
  cmake_path(REMOVE_FILENAME CMAKE_CXX_COMPILER OUTPUT_VARIABLE CLANG_CL_DIR)
  cmake_path(APPEND CLANG_CL_DIR "../lib/clang" ${CLANG_CL_MAJOR_VERSION} "lib/windows")
@@ -249,5 +249,3 @@ index b0f602bfe7b8f..02d4ae0d5429d 100644
 +find_library(CLANG_BUILTINS_LIBRARY clang_rt.builtins-${CLANG_BUILTINS_ARCH} PATHS ${CLANG_CL_DIR} REQUIRED NO_DEFAULT_PATH)
  link_libraries(${CLANG_BUILTINS_LIBRARY})
  
- set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /STACK:8388608")
-\ No newline at end of file
