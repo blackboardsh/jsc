@@ -50,8 +50,17 @@ if ($localBuild -and (Test-Path (Join-Path $webkit '.git'))) {
     @('/*', '!/JSTests/', '!/LayoutTests/', '!/ManualTests/', '!/WebDriverTests/'),
     $utf8
   )
-  git -C $webkit checkout --detach $metadata.webkitSha
-  if ($LASTEXITCODE -ne 0) { throw 'WebKit checkout failed' }
+  # Sparse checkout lazily downloads a large batch of source blobs. A reset
+  # connection can leave the clone valid, so retry the checkout in place.
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $ErrorActionPreference = 'Continue'
+    git -C $webkit checkout --detach $metadata.webkitSha
+    $checkoutExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($checkoutExit -eq 0) { break }
+    if ($attempt -eq 3) { throw 'WebKit checkout failed after three attempts' }
+    Start-Sleep -Seconds (2 * $attempt)
+  }
 }
 
 Push-Location $webkit
