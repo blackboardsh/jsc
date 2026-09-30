@@ -249,3 +249,18 @@ index b0f602bfe7b8f..02d4ae0d5429d 100644
 +find_library(CLANG_BUILTINS_LIBRARY clang_rt.builtins-${CLANG_BUILTINS_ARCH} PATHS ${CLANG_CL_DIR} REQUIRED NO_DEFAULT_PATH)
  link_libraries(${CLANG_BUILTINS_LIBRARY})
  
+diff --git a/Source/bmalloc/CMakeLists.txt b/Source/bmalloc/CMakeLists.txt
+index 624ab992dde25..142fe2fe0dbd2 100644
+--- a/Source/bmalloc/CMakeLists.txt
++++ b/Source/bmalloc/CMakeLists.txt
+@@ -682,7 +682,9 @@ endif ()
+ 
+ if (MSVC)
+     add_compile_options(/wd4206)
+-    add_compile_options(-mcx16)
++    if (WTF_CPU_X86_64)
++        add_compile_options(-mcx16)
++    endif ()
+ endif ()
+ 
+ WEBKIT_FRAMEWORK_DECLARE(bmalloc)
