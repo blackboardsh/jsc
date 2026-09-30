@@ -329,6 +329,8 @@ if ($Architecture -eq 'arm64') {
 [IO.File]::WriteAllText($smokeTest, "$smokeSource`n", $utf8)
 & $jsc.FullName $smokeTest
 if ($LASTEXITCODE -ne 0) { throw 'Windows JSC smoke test failed' }
+& $jsc.FullName (Join-Path $root 'scripts/test-gc-memory.js')
+if ($LASTEXITCODE -ne 0) { throw 'Windows JSC GC memory regression failed' }
 $packageDir = Join-Path $temp $artifactName
 New-Item -ItemType Directory -Force -Path "$packageDir/bin", "$packageDir/lib", "$packageDir/share/cottontail-jsc", "$packageDir/include/JavaScriptCore", "$packageDir/include/wtf", "$packageDir/include/bmalloc" | Out-Null
 New-Item -ItemType Directory -Force -Path "$packageDir/include/cottontail" | Out-Null

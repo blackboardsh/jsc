@@ -4,10 +4,19 @@ Subject: Backport Windows ARM64 CPU, context, and calling convention support
 Subset of upstream WebKit commit 2bff772c7eeb205bb66618d4faf7f712fdfb626c.
 https://bugs.webkit.org/show_bug.cgi?id=307310
 
+The GC copy guards additionally exclude Windows ARM64 from the SIMD branch
+so large copies and overlapping moves actually execute the scalar fallback.
+
 diff --git a/Source/JavaScriptCore/heap/GCMemoryOperations.h b/Source/JavaScriptCore/heap/GCMemoryOperations.h
-index 432e02d808480..d638b9e336d08 100644
+index 432e02d80..9e34907c2 100644
 --- a/Source/JavaScriptCore/heap/GCMemoryOperations.h
 +++ b/Source/JavaScriptCore/heap/GCMemoryOperations.h
+@@ -58,4 +58,4 @@ ALWAYS_INLINE void gcSafeMemcpy(T* dst, const T* src, size_t bytes)
+-#if CPU(X86_64) || CPU(ARM64)
++#if CPU(X86_64) || (CPU(ARM64) && !OS(WINDOWS))
+     if (bytes <= smallCutoff)
+         slowPathForwardMemcpy();
+     else if (isARM64() || bytes <= mediumCutoff) {
 @@ -93,7 +93,10 @@ ALWAYS_INLINE void gcSafeMemcpy(T* dst, const T* src, size_t bytes)
              :
              : "xmm0", "xmm1", "xmm2", "xmm3", "memory", "cc"
@@ -20,6 +29,12 @@ index 432e02d808480..d638b9e336d08 100644
          uint64_t alignedBytes = (static_cast<uint64_t>(bytes) / 32) * 32;
  
          uint64_t dstPtr = static_cast<uint64_t>(std::bit_cast<uintptr_t>(dst));
+@@ -170,4 +173,4 @@ ALWAYS_INLINE void gcSafeMemmove(T* dst, const T* src, size_t bytes)
+-#if CPU(X86_64) || CPU(ARM64)
++#if CPU(X86_64) || (CPU(ARM64) && !OS(WINDOWS))
+     if (bytes <= smallCutoff)
+         slowPathBackwardsMemmove();
+     else {
 @@ -209,7 +212,7 @@ ALWAYS_INLINE void gcSafeMemmove(T* dst, const T* src, size_t bytes)
              :
              : "xmm0", "xmm1", "xmm2", "xmm3", "memory", "cc"
