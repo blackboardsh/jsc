@@ -1,6 +1,9 @@
 /WebKit/
 /WebKitBuild/
+/WebKitBuild-arm64/
 /.build-temp/
+/.build-temp-arm64/
 /build-metadata/
 /icu-build/
+/icu-build-arm64/
 /release/

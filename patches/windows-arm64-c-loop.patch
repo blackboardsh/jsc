@@ -1,0 +1,234 @@
+From: Sosuke Suzuki <sosuke@bun.sh>
+Subject: Backport Windows ARM64 CPU, context, and calling convention support
+
+Subset of upstream WebKit commit 2bff772c7eeb205bb66618d4faf7f712fdfb626c.
+https://bugs.webkit.org/show_bug.cgi?id=307310
+
+diff --git a/Source/JavaScriptCore/heap/GCMemoryOperations.h b/Source/JavaScriptCore/heap/GCMemoryOperations.h
+index 432e02d808480..d638b9e336d08 100644
+--- a/Source/JavaScriptCore/heap/GCMemoryOperations.h
++++ b/Source/JavaScriptCore/heap/GCMemoryOperations.h
+@@ -93,7 +93,10 @@ ALWAYS_INLINE void gcSafeMemcpy(T* dst, const T* src, size_t bytes)
+             :
+             : "xmm0", "xmm1", "xmm2", "xmm3", "memory", "cc"
+         );
+-#elif CPU(ARM64)
++#elif CPU(ARM64) && !OS(WINDOWS)
++        // On Windows ARM64, LLVM has a bug (llvm/llvm-project#47432) that causes a
++        // fatal error "Failed to evaluate function length in SEH unwind info" when
++        // inline assembly contains alignment directives. Fall back to scalar code.
+         uint64_t alignedBytes = (static_cast<uint64_t>(bytes) / 32) * 32;
+ 
+         uint64_t dstPtr = static_cast<uint64_t>(std::bit_cast<uintptr_t>(dst));
+@@ -209,7 +212,7 @@ ALWAYS_INLINE void gcSafeMemmove(T* dst, const T* src, size_t bytes)
+             :
+             : "xmm0", "xmm1", "xmm2", "xmm3", "memory", "cc"
+         );
+-#elif CPU(ARM64)
++#elif CPU(ARM64) && !OS(WINDOWS)
+         uint64_t alignedBytes = (static_cast<uint64_t>(bytes) / 32) * 32;
+         uint64_t dstPtr = static_cast<uint64_t>(std::bit_cast<uintptr_t>(dst) + static_cast<uint64_t>(bytes));
+         uint64_t srcPtr = static_cast<uint64_t>(std::bit_cast<uintptr_t>(src) + static_cast<uint64_t>(bytes));
+@@ -262,7 +265,10 @@ ALWAYS_INLINE void gcSafeZeroMemory(T* dst, size_t bytes)
+         : "a"(zero)
+         : "memory"
+     );
+-#elif CPU(ARM64)
++#elif CPU(ARM64) && !OS(WINDOWS)
++    // On Windows ARM64, LLVM has a bug (llvm/llvm-project#47432) that causes a
++    // fatal error "Failed to evaluate function length in SEH unwind info" when
++    // inline assembly contains alignment directives like .p2align.
+     uint64_t alignedBytes = (static_cast<uint64_t>(bytes) / 64) * 64;
+     uint64_t dstPtr = static_cast<uint64_t>(std::bit_cast<uintptr_t>(dst));
+     uint64_t end = dstPtr + bytes;
+diff --git a/Source/JavaScriptCore/interpreter/CallFrame.h b/Source/JavaScriptCore/interpreter/CallFrame.h
+index 39be26f80762e..acdd37cfd68ed 100644
+--- a/Source/JavaScriptCore/interpreter/CallFrame.h
++++ b/Source/JavaScriptCore/interpreter/CallFrame.h
+@@ -391,8 +391,8 @@ using JSInstruction = BaseInstruction<JSOpcodeTraits>;
+ JS_EXPORT_PRIVATE bool isFromJSCode(void* returnAddress);
+ 
+ #if USE(BUILTIN_FRAME_ADDRESS)
+-#if OS(WINDOWS)
+-// On Windows, __builtin_frame_address(1) doesn't work, it returns __builtin_frame_address(0)
++#if OS(WINDOWS) && CPU(X86_64)
++// On Windows x86_64, __builtin_frame_address(1) doesn't work, it returns __builtin_frame_address(0)
+ // We can't use __builtin_frame_address(0) either, as on Windows it points at the space after
+ // function's local variables on the stack instead of before like other platforms.
+ // Instead we use _AddressOfReturnAddress(), and clobber rbp so it should be the first parameter
+@@ -408,7 +408,7 @@ JS_EXPORT_PRIVATE bool isFromJSCode(void* returnAddress);
+         ASSERT(JSC::isFromJSCode(removeCodePtrTag<void*>(__builtin_return_address(0)))); \
+         std::bit_cast<JSC::CallFrame*>(*((uintptr_t**) _AddressOfReturnAddress() - 1)); \
+     })
+-#else // !OS(WINDOWS)
++#else // !OS(WINDOWS) || !CPU(X86_64)
+ // FIXME (see rdar://72897291): Work around a Clang bug where __builtin_return_address()
+ // sometimes gives us a signed pointer, and sometimes does not.
+ #define DECLARE_CALL_FRAME(vm) \
+@@ -416,7 +416,7 @@ JS_EXPORT_PRIVATE bool isFromJSCode(void* returnAddress);
+         ASSERT(JSC::isFromJSCode(removeCodePtrTag<void*>(__builtin_return_address(0)))); \
+         std::bit_cast<JSC::CallFrame*>(__builtin_frame_address(1)); \
+     })
+-#endif // !OS(WINDOWS)
++#endif // !OS(WINDOWS) || !CPU(X86_64)
+ #else
+ #define DECLARE_CALL_FRAME(vm) ((vm).topCallFrame)
+ #endif
+diff --git a/Source/JavaScriptCore/runtime/MachineContext.h b/Source/JavaScriptCore/runtime/MachineContext.h
+index 50353c75e43c2..2ac8b24f00e62 100644
+--- a/Source/JavaScriptCore/runtime/MachineContext.h
++++ b/Source/JavaScriptCore/runtime/MachineContext.h
+@@ -103,6 +103,8 @@ static inline void*& stackPointerImpl(PlatformRegisters& regs)
+ 
+ #if CPU(ARM)
+     return reinterpret_cast<void*&>((uintptr_t&) regs.Sp);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>((uintptr_t&) regs.Sp);
+ #elif CPU(X86)
+     return reinterpret_cast<void*&>((uintptr_t&) regs.Esp);
+ #elif CPU(X86_64)
+@@ -239,6 +241,8 @@ static inline void*& framePointerImpl(PlatformRegisters& regs)
+ 
+ #if CPU(ARM)
+     return reinterpret_cast<void*&>((uintptr_t&) regs.R11);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>((uintptr_t&) regs.Fp);
+ #elif CPU(X86)
+     return reinterpret_cast<void*&>((uintptr_t&) regs.Ebp);
+ #elif CPU(X86_64)
+@@ -367,6 +371,8 @@ static inline void*& instructionPointerImpl(PlatformRegisters& regs)
+ 
+ #if CPU(ARM)
+     return reinterpret_cast<void*&>((uintptr_t&) regs.Pc);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>((uintptr_t&) regs.Pc);
+ #elif CPU(X86)
+     return reinterpret_cast<void*&>((uintptr_t&) regs.Eip);
+ #elif CPU(X86_64)
+@@ -548,6 +554,8 @@ inline void*& argumentPointer<1>(PlatformRegisters& regs)
+ 
+ #if CPU(ARM)
+     return reinterpret_cast<void*&>((uintptr_t&) regs.R1);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>((uintptr_t&) regs.X1);
+ #elif CPU(X86)
+     return reinterpret_cast<void*&>((uintptr_t&) regs.Edx);
+ #elif CPU(X86_64)
+@@ -577,6 +585,8 @@ inline void* wasmInstancePointer(const PlatformRegisters& regs)
+ 
+ #if CPU(ARM)
+     return reinterpret_cast<void*>((uintptr_t) regs.R10);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*>((uintptr_t) regs.X19);
+ #elif CPU(X86)
+     return reinterpret_cast<void*>((uintptr_t) regs.Ebx);
+ #elif CPU(X86_64)
+@@ -750,6 +760,9 @@ inline void*& llintInstructionPointer(PlatformRegisters& regs)
+ #if CPU(ARM)
+     static_assert(LLInt::LLIntPC == ARMRegisters::r8, "Wrong LLInt PC.");
+     return reinterpret_cast<void*&>((uintptr_t&) regs.R8);
++#elif CPU(ARM64)
++    static_assert(LLInt::LLIntPC == ARM64Registers::x4, "Wrong LLInt PC.");
++    return reinterpret_cast<void*&>((uintptr_t&) regs.X4);
+ #elif CPU(X86)
+     static_assert(LLInt::LLIntPC == X86Registers::esi, "Wrong LLInt PC.");
+     return reinterpret_cast<void*&>((uintptr_t&) regs.Esi);
+diff --git a/Source/WTF/wtf/CodePtr.h b/Source/WTF/wtf/CodePtr.h
+index efa00c8f4ab47..0a6a5c65a46f2 100644
+--- a/Source/WTF/wtf/CodePtr.h
++++ b/Source/WTF/wtf/CodePtr.h
+@@ -91,7 +91,7 @@ class CodePtr : public CodePtrBase {
+         : m_value(encodeFunc(ptr))
+     { }
+ 
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && CPU(X86_64)
+     template<typename Out, typename... In>
+     constexpr CodePtr(Out(SYSV_ABI *ptr)(In...))
+         : m_value(encodeFunc(ptr))
+diff --git a/Source/WTF/wtf/FunctionPtr.h b/Source/WTF/wtf/FunctionPtr.h
+index c78c59733ca1b..198bc887617e1 100644
+--- a/Source/WTF/wtf/FunctionPtr.h
++++ b/Source/WTF/wtf/FunctionPtr.h
+@@ -88,7 +88,7 @@ class FunctionPtr<tag, Out(In...), attr> : public FunctionPtrBase {
+         : m_ptr(encode(ptr))
+     { }
+ 
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && CPU(X86_64)
+     constexpr FunctionPtr(Out(SYSV_ABI *ptr)(In...))
+         : m_ptr(encode(ptr))
+     { }
+diff --git a/Source/WTF/wtf/FunctionTraits.h b/Source/WTF/wtf/FunctionTraits.h
+index 90e91426213ca..ac54804e8d5e5 100644
+--- a/Source/WTF/wtf/FunctionTraits.h
++++ b/Source/WTF/wtf/FunctionTraits.h
+@@ -80,7 +80,7 @@ struct FunctionTraits<Result(Args...)> {
+ 
+ };
+ 
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && CPU(X86_64)
+ template<typename Result, typename... Args>
+ struct FunctionTraits<Result SYSV_ABI(Args...)> : public FunctionTraits<Result(Args...)> {
+ };
+@@ -90,7 +90,7 @@ template<typename Result, typename... Args>
+ struct FunctionTraits<Result(*)(Args...)> : public FunctionTraits<Result(Args...)> {
+ };
+ 
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && CPU(X86_64)
+ template<typename Result, typename... Args>
+ struct FunctionTraits<Result SYSV_ABI (*)(Args...)> : public FunctionTraits<Result(Args...)> {
+ };
+diff --git a/Source/WTF/wtf/PlatformCPU.h b/Source/WTF/wtf/PlatformCPU.h
+index 8aac10247bb56..fabd6cba39f16 100644
+--- a/Source/WTF/wtf/PlatformCPU.h
++++ b/Source/WTF/wtf/PlatformCPU.h
+@@ -119,7 +119,7 @@
+ #endif
+ 
+ /* CPU(ARM64) */
+-#if defined(__arm64__) || defined(__aarch64__)
++#if defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
+ #define WTF_CPU_ARM64 1
+ #define WTF_CPU_KNOWN 1
+ 
+diff --git a/Source/WTF/wtf/PlatformCallingConventions.h b/Source/WTF/wtf/PlatformCallingConventions.h
+index eea6f6f70e50d..921f27e85005e 100644
+--- a/Source/WTF/wtf/PlatformCallingConventions.h
++++ b/Source/WTF/wtf/PlatformCallingConventions.h
+@@ -33,7 +33,7 @@
+ 
+ /* Macros for specifing specific calling conventions. */
+ 
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && CPU(X86_64)
+ #define SYSV_ABI __attribute__((sysv_abi))
+ #else
+ #define SYSV_ABI
+diff --git a/Source/WTF/wtf/StackPointer.cpp b/Source/WTF/wtf/StackPointer.cpp
+index 374efd6369bf7..a046a1f7dec50 100644
+--- a/Source/WTF/wtf/StackPointer.cpp
++++ b/Source/WTF/wtf/StackPointer.cpp
+@@ -93,6 +93,20 @@ __asm__(
+     ".previous" "\n"
+ );
+ 
++#elif CPU(ARM64) && OS(WINDOWS)
++__asm__(
++    ".text" "\n"
++    ".align 4" "\n"
++    ".globl " SYMBOL_STRING(currentStackPointer) "\n"
++    SYMBOL_STRING(currentStackPointer) ":" "\n"
++
++    "mov x0, sp" "\n"
++    "ret" "\n"
++
++    ".section .drectve" "\n"
++    ".ascii \"-export:currentStackPointer\"" "\n"
++);
++
+ #elif CPU(ARM64)
+ __asm__(
+     ".text" "\n"
