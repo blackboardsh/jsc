@@ -294,5 +294,5 @@ index a8dfb9558..2f38a287a 100644
 +        STATICALLY_LINKED_WITH_bmalloc
 +    )
 +endif ()
-
+ 
  # WebAssembly generator

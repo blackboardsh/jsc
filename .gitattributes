@@ -1,0 +1,2 @@
+# Unified diffs must retain their original line endings on Windows too.
+*.patch text eol=lf whitespace=-blank-at-eol
