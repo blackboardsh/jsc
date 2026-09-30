@@ -51,6 +51,7 @@ jobs:
           node --test
           scripts/embedder-command.test.mjs
           scripts/immutable-release.test.mjs
+          scripts/patch-checkout.test.mjs
           scripts/r2-client.test.mjs
           scripts/verify-windows-static-link-contract.test.mjs
 
