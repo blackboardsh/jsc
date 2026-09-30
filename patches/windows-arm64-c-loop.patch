@@ -279,3 +279,20 @@ index 624ab992dde25..142fe2fe0dbd2 100644
  endif ()
  
  WEBKIT_FRAMEWORK_DECLARE(bmalloc)
+diff --git a/Source/JavaScriptCore/CMakeLists.txt b/Source/JavaScriptCore/CMakeLists.txt
+index a8dfb9558..2f38a287a 100644
+--- a/Source/JavaScriptCore/CMakeLists.txt
++++ b/Source/JavaScriptCore/CMakeLists.txt
+@@ -469,5 +469,12 @@ add_custom_command(
+ # single source file, so we need to create a separate target for it.
+ add_library(LowLevelInterpreterLib OBJECT llint/LowLevelInterpreter.cpp
+     ${JavaScriptCore_DERIVED_SOURCES_DIR}/${LLIntOutput})
++if (WIN32 AND ENABLE_STATIC_JSC)
++    target_compile_definitions(LowLevelInterpreterLib PRIVATE
++        STATICALLY_LINKED_WITH_JavaScriptCore
++        STATICALLY_LINKED_WITH_WTF
++        STATICALLY_LINKED_WITH_bmalloc
++    )
++endif ()
+
+ # WebAssembly generator

@@ -40,13 +40,14 @@ function main() {
     );
   }
 
-  const undefinedSymbols = parseNmSymbols(inspect(nm, [
-    "--format=posix",
-    "--undefined-only",
-    embedderLibrary,
-  ]), "U");
+  // Inspect the full closure: C_LOOP's standalone interpreter object can
+  // accidentally import JSC/WTF data even when the embedder itself is static.
+  const undefinedSymbols = new Set();
   const definedSymbols = new Set();
-  for (const library of packagedLibraries) {
+  for (const library of [embedderLibrary, ...packagedLibraries]) {
+    for (const symbol of parseNmSymbols(inspect(nm, [
+      "--format=posix", "--undefined-only", library,
+    ]), "U")) undefinedSymbols.add(symbol);
     const symbols = parseNmSymbols(inspect(nm, [
       "--format=posix",
       "--defined-only",
@@ -58,7 +59,7 @@ function main() {
   const mismatches = findStaticImportMismatches(undefinedSymbols, definedSymbols);
   if (mismatches.length > 0) {
     throw new Error(
-      `CottontailJSCEmbedder.lib has ${mismatches.length} import thunk(s) whose ` +
+      `The packaged SDK has ${mismatches.length} import thunk(s) whose ` +
       "targets are only defined directly by the packaged static libraries:\n" +
       mismatches.map(symbol => `  ${symbol}`).join("\n"),
     );
