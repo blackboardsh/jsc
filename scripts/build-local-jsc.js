@@ -88,6 +88,13 @@ function hostConfig() {
 			platformKey: "windows-x64",
 			targetOs: "windows",
 			artifactName: "cottontail-jsc-windows-amd64",
+			architecture: "x64",
+		},
+		"win32-arm64": {
+			platformKey: "windows-arm64",
+			targetOs: "windows",
+			artifactName: "cottontail-jsc-windows-arm64",
+			architecture: "arm64",
 		},
 	};
 	return configs[key] || null;
@@ -189,7 +196,7 @@ function sourceFingerprint(manifest, config) {
 
 function icuFingerprint(config) {
 	const hash = createHash("sha256");
-	hash.update(`cottontail-local-icu-v1\0${config.targetOs}\0`);
+	hash.update(`cottontail-local-icu-v1\0${config.platformKey}\0`);
 	addFileTree(hash, join(root, "bridge"));
 	addFileTree(hash, join(root, "scripts", "prepare-system-icu.sh"));
 	return hash.digest("hex");
@@ -259,6 +266,8 @@ function build(config, manifest) {
 				"Bypass",
 				"-File",
 				join(root, "scripts", "build-windows-jsc.ps1"),
+				"-Architecture",
+				config.architecture,
 			],
 			{ env },
 		);

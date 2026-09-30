@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       webkit_ref:
-        description: Exact upstream WebKit tag; leave empty to resolve the newest release
+        description: WebKit tag; empty uses the repository pin, latest selects the newest upstream release
         required: false
         type: string
 
@@ -24,6 +24,7 @@ concurrency:
 env:
   LLVM_VERSION: 21.1.8
   LLVM_SHA256: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
+  LLVM_ARM64_SHA256: 1a770a49460b73667c1750b79f90e7027ead468f966c5d30e180cae19f61d91e
   WINDOWS_JSCONLY_PATCH_COMMIT: 2d96c99b553946b611978b26dd1f83a8b68be10a
   WINDOWS_JSCONLY_PATCH_SHA256: 9f6578bd3a6e47dc6e43d0868a2d9ac8642d063351dacceada2da3f9100f5247
   WINDOWS_MSVC_ATTRIBUTE_PATCH_COMMIT: 87d57a3fc39c408dd484cd3341a9448f3be2208d
@@ -178,10 +179,24 @@ jobs:
           retention-days: 14
 
   build-windows:
-    name: Build windows-x64
+    name: Build windows-${{ matrix.arch }}
     needs:
       - resolve-webkit
-    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            artifact_arch: amd64
+            runner: windows-2025
+            llvm_arch: win64
+          # JSC and ICU use C++ rather than Zig. Native execution is needed
+          # for ICU's build-time tools and the resulting JSC smoke test.
+          - arch: arm64
+            artifact_arch: arm64
+            runner: windows-11-arm
+            llvm_arch: woa64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
 
     steps:
@@ -198,40 +213,41 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.11.1
-          architecture: x64
+          architecture: ${{ matrix.arch }}
           package-manager-cache: false
 
       - name: Install Windows dependencies
         shell: pwsh
         run: |
           $nodeIdentity = node -p "process.versions.node + ' ' + process.platform + ' ' + process.arch"
-          if ($LASTEXITCODE -ne 0 -or $nodeIdentity.Trim() -ne "24.11.1 win32 x64") {
-            throw "Expected Node 24.11.1 win32 x64, got '$nodeIdentity'"
+          if ($LASTEXITCODE -ne 0 -or $nodeIdentity.Trim() -ne "24.11.1 win32 ${{ matrix.arch }}") {
+            throw "Expected Node 24.11.1 win32 ${{ matrix.arch }}, got '$nodeIdentity'"
           }
           choco install strawberryperl ninja msys2 -y --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'Chocolatey dependency installation failed' }
           C:\tools\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm make"
           if ($LASTEXITCODE -ne 0) { throw 'MSYS2 GNU Make installation failed' }
-          $installer = Join-Path $env:RUNNER_TEMP "LLVM-$env:LLVM_VERSION-win64.exe"
-          curl.exe --fail --location --retry 3 --output $installer "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe"
+          $installer = Join-Path $env:RUNNER_TEMP "LLVM-$env:LLVM_VERSION-${{ matrix.llvm_arch }}.exe"
+          curl.exe --fail --location --retry 3 --output $installer "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-${{ matrix.llvm_arch }}.exe"
           if ($LASTEXITCODE -ne 0) { throw 'LLVM download failed' }
           $actualHash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $env:LLVM_SHA256) { throw "LLVM checksum mismatch: $actualHash" }
-          $process = Start-Process -FilePath $installer -ArgumentList '/S', '/D=C:\LLVM' -Wait -PassThru
+          $expectedHash = if ('${{ matrix.arch }}' -eq 'arm64') { $env:LLVM_ARM64_SHA256 } else { $env:LLVM_SHA256 }
+          if ($actualHash -ne $expectedHash) { throw "LLVM checksum mismatch: $actualHash" }
+          $process = Start-Process -FilePath $installer -ArgumentList '/S', '/D=C:\LLVM' -WindowStyle Hidden -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw 'LLVM installation failed' }
 
       - name: Build and package JSC
         shell: pwsh
-        run: .\scripts\build-windows-jsc.ps1
+        run: .\scripts\build-windows-jsc.ps1 -Architecture ${{ matrix.arch }}
 
       - name: Retain JSC release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: jsc-release-windows-x64
+          name: jsc-release-windows-${{ matrix.arch }}
           path: |
-            release/cottontail-jsc-windows-amd64.tar.gz
-            release/cottontail-jsc-windows-amd64.tar.gz.sha256
-            release/icudt70l-windows-x64.dat
+            release/cottontail-jsc-windows-${{ matrix.artifact_arch }}.tar.gz
+            release/cottontail-jsc-windows-${{ matrix.artifact_arch }}.tar.gz.sha256
+            release/icudt70l-windows-${{ matrix.arch }}.dat
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

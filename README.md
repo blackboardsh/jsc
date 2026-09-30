@@ -6,11 +6,20 @@ for the Cottontail target matrix:
 - macOS ARM64
 - Linux x64
 - Linux ARM64
-- Windows x64 (also used through Windows-on-ARM x64 emulation)
+- Windows x64 (also usable through Windows-on-ARM x64 emulation)
+- Windows ARM64 (C_LOOP interpreter, without JIT or WebAssembly)
 
-Every SDK enables the complete Baseline, DFG, FTL, and WebAssembly JIT stack.
-Sampling profiler, remote inspector, and API tests are disabled. There are no
-reduced-tier build profiles.
+The macOS, Linux, and Windows x64 SDKs enable the complete Baseline, DFG, FTL,
+and WebAssembly JIT stack. Windows ARM64 initially uses the C_LOOP interpreter
+with JIT and WebAssembly disabled; the release manifest records these execution
+capabilities explicitly. Sampling profiler, remote inspector, and API tests are
+disabled on every target. ARM64 runtime consumers must benchmark this interpreter
+before replacing their existing x64 JIT runtime.
+
+Windows ARM64 JSC and ICU build and run smoke tests natively on `windows-11-arm`.
+The separate Zig dependencies cross-compile on x64 runners. The ARM64 port
+backports CPU, context, and calling-convention changes from upstream WebKit
+commit `2bff772c7eeb205bb66618d4faf7f712fdfb626c`; the JIT port is a separate track.
 
 ## ICU contract
 
@@ -22,12 +31,12 @@ static ICU 70.1 fallback implementation built with archive data packaging:
 - separately published database: `jsc/icu/70.1/icudt70l.dat`
 
 The database is deliberately absent from each SDK tarball, so it is neither
-duplicated four times in R2 nor accidentally copied into downstream app bundles.
+duplicated across SDKs in R2 nor accidentally copied into downstream app bundles.
 
 Cottontail links the fallback code into its own executable, probes the operating
 system ICU first, and downloads the external database only when the installed
 ICU is absent or older than ABI 70. The data file is architecture-independent,
-and the build fan-in verifies that all four native ICU builds produced the exact
+and the build fan-in verifies that all five native ICU builds produced the exact
 same SHA-256 before publishing one canonical copy.
 
 The standalone Linux `jsc` shell uses the bridge under `bridge/` only for its
@@ -37,12 +46,13 @@ Cottontail, and the required symbol contract is published under
 
 ## GitHub Actions build and publishing
 
-GitHub Actions resolves the newest upstream `WebKit-*` tag, checks out WebKit directly
-with the large test suites excluded, and builds all four native targets. Set
-the `webkit_ref` manual-workflow input to build an exact tag instead. Automatic
-selection orders tags by upstream commit date rather than the numeric-looking tag name;
-the workflow uses its built-in `GITHUB_TOKEN` to query GitHub's GraphQL API. No
-custom GitHub token is required.
+GitHub Actions builds the WebKit tag and commit recorded in
+`scripts/webkit-ref.json`, with the large test suites excluded. The pin matches
+Cottontail's current SDK baseline and keeps unrelated upstream changes out of
+platform builds. Update the pin when an upstream upgrade passes all five targets.
+Set the `webkit_ref` manual-workflow input to another exact tag to test an upgrade,
+or to `latest` to select the newest tag by upstream commit date using the
+workflow's built-in `GITHUB_TOKEN`. No custom GitHub token is required.
 
 The workflow can also be run manually from `main`. A new publication requires a
 new JSC repository commit: the repository revision is the immutable build key,

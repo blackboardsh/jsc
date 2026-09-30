@@ -20,6 +20,7 @@ const matrix = {
   'linux-x64': 'cottontail-jsc-linux-amd64',
   'linux-arm64': 'cottontail-jsc-linux-arm64',
   'windows-x64': 'cottontail-jsc-windows-amd64',
+  'windows-arm64': 'cottontail-jsc-windows-arm64',
 };
 
 function fail(message) {
@@ -77,7 +78,10 @@ const manifestObject = {
     },
   },
   platforms: Object.fromEntries(artifacts.map((artifact) => [artifact.platform, {
-    ...(artifact.platform === 'windows-x64' ? { msvcRuntime: 'MT' } : {}),
+    ...(artifact.platform.startsWith('windows-') ? { msvcRuntime: 'MT' } : {}),
+    execution: artifact.platform === 'windows-arm64'
+      ? { interpreter: 'c-loop', jit: false, webAssembly: false }
+      : { interpreter: 'llint', jit: true, webAssembly: true },
     archive: {
       url: `${publicBaseUrl}/${snapshotKey(artifact.platform)}`,
       sha256: artifact.checksum,

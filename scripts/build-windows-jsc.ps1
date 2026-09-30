@@ -1,20 +1,37 @@
+param([ValidateSet('x64', 'arm64')][string]$Architecture = 'x64')
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $metadata = Get-Content (Join-Path $root 'build-metadata/webkit.json') -Raw | ConvertFrom-Json
 $webkit = Join-Path $root 'WebKit'
-$output = Join-Path $root 'WebKitBuild'
-$temp = Join-Path $root '.build-temp'
-$icuPrefix = Join-Path $root 'icu-build'
-$artifactName = 'cottontail-jsc-windows-amd64'
+$suffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
+$output = Join-Path $root "WebKitBuild$suffix"
+$temp = Join-Path $root ".build-temp$suffix"
+$icuPrefix = Join-Path $root "icu-build$suffix"
+$artifactArch = if ($Architecture -eq 'arm64') { 'arm64' } else { 'amd64' }
+$artifactName = "cottontail-jsc-windows-$artifactArch"
+$hostArch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
+if ($Architecture -eq 'arm64' -and $hostArch -ne 'arm64') {
+  throw 'The ARM64 JSC/ICU build requires a Windows ARM64 host to execute ICU build tools. Zig dependencies can cross-compile separately.'
+}
+$llvmRoot = if ($env:JSC_LLVM_ROOT) { $env:JSC_LLVM_ROOT } else { 'C:\LLVM' }
+$llvmCmake = $llvmRoot.Replace('\', '/')
+$targetTriple = if ($Architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+$icuTriple = if ($Architecture -eq 'arm64') { 'aarch64-pc-mingw32' } else { 'x86_64-pc-mingw32' }
+$jitFeatures = @('ENABLE_JIT', 'ENABLE_DFG_JIT', 'ENABLE_FTL_JIT', 'ENABLE_WEBASSEMBLY', 'ENABLE_WEBASSEMBLY_BBQJIT', 'ENABLE_WEBASSEMBLY_OMGJIT')
+$jitValue = if ($Architecture -eq 'arm64') { 'OFF' } else { 'ON' }
+$cLoopValue = if ($Architecture -eq 'arm64') { 'ON' } else { 'OFF' }
+$featureFlags = (($jitFeatures | ForEach-Object { "-D$_=$jitValue" }) -join ' ') + " -DENABLE_C_LOOP=$cLoopValue"
 $icuHash = '8d205428c17bf13bb535300669ed28b338a157b1c01ae66d31d0d3e2d47c3fd5'
 $localBuild = $env:JSC_LOCAL_BUILD -eq '1'
 
-if ($localBuild) {
-  Remove-Item $output, $temp, $icuPrefix -Recurse -Force -ErrorAction Ignore
-} else {
-  Remove-Item $webkit, $output, $temp, $icuPrefix -Recurse -Force -ErrorAction Ignore
+foreach ($directory in @($output, $temp, $icuPrefix) + $(if ($localBuild) { @() } else { @($webkit) })) {
+  $resolved = [IO.Path]::GetFullPath($directory)
+  if (-not $resolved.StartsWith([IO.Path]::GetFullPath($root).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Build cleanup path is outside the repository: $resolved"
+  }
+  if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
 }
 New-Item -ItemType Directory -Force -Path $temp, $icuPrefix, (Join-Path $root 'release') | Out-Null
 if ($localBuild -and (Test-Path (Join-Path $webkit '.git'))) {
@@ -33,8 +50,17 @@ if ($localBuild -and (Test-Path (Join-Path $webkit '.git'))) {
     @('/*', '!/JSTests/', '!/LayoutTests/', '!/ManualTests/', '!/WebDriverTests/'),
     $utf8
   )
-  git -C $webkit checkout --detach $metadata.webkitSha
-  if ($LASTEXITCODE -ne 0) { throw 'WebKit checkout failed' }
+  # Sparse checkout lazily downloads a large batch of source blobs. A reset
+  # connection can leave the clone valid, so retry the checkout in place.
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $ErrorActionPreference = 'Continue'
+    git -C $webkit checkout --detach $metadata.webkitSha
+    $checkoutExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($checkoutExit -eq 0) { break }
+    if ($attempt -eq 3) { throw 'WebKit checkout failed after three attempts' }
+    Start-Sleep -Seconds (2 * $attempt)
+  }
 }
 
 Push-Location $webkit
@@ -127,6 +153,18 @@ try {
     if ($windowsSystemIcuApplyExitCode -ne 0) { throw 'Windows system ICU compatibility patch failed' }
   }
   Copy-Item (Join-Path $root 'bridge/windows-system-icu.h') 'Source/JavaScriptCore/runtime/CottontailWindowsSystemICU.h'
+
+  if ($Architecture -eq 'arm64') {
+    $arm64Patch = Join-Path $root 'patches/windows-arm64-c-loop.patch'
+    $ErrorActionPreference = 'Continue'
+    git apply --reverse --check $arm64Patch 2>$null
+    $alreadyApplied = $LASTEXITCODE -eq 0
+    $ErrorActionPreference = 'Stop'
+    if (-not $alreadyApplied) {
+      git apply $arm64Patch
+      if ($LASTEXITCODE -ne 0) { throw 'Windows ARM64 context and calling-convention patch failed' }
+    }
+  }
 } finally {
   Pop-Location
 }
@@ -153,16 +191,17 @@ if ($vswhereCommand) { $vswhereCandidates += $vswhereCommand.Source }
 $vswhere = $vswhereCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $vswhere) { throw 'Could not find vswhere.exe' }
 
-$vsInstallOutput = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+$vcComponent = if ($Architecture -eq 'arm64') { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' } else { 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }
+$vsInstallOutput = & $vswhere -latest -products '*' -requires $vcComponent -property installationPath
 $vswhereExitCode = $LASTEXITCODE
 $vsInstall = $vsInstallOutput | Select-Object -First 1
 if ($vswhereExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($vsInstall)) {
-  throw 'Could not find Visual Studio C++ x64 build tools'
+  throw "Could not find Visual Studio C++ $Architecture build tools"
 }
 $vsInstall = $vsInstall.Trim()
 $vsDevCmd = Join-Path $vsInstall 'Common7/Tools/VsDevCmd.bat'
 if (-not (Test-Path $vsDevCmd)) { throw "VsDevCmd.bat not found at $vsDevCmd" }
-$msysBash = 'C:\tools\msys64\usr\bin\bash.exe'
+$msysBash = if ($env:JSC_MSYS_BASH) { $env:JSC_MSYS_BASH } else { 'C:\tools\msys64\usr\bin\bash.exe' }
 if (-not (Test-Path $msysBash)) { throw "MSYS2 bash not found at $msysBash" }
 $icuBuild = Join-Path $temp 'icu-static-build'
 $icuInstall = Join-Path $temp 'icu-static-install'
@@ -175,12 +214,12 @@ $icuScriptUnix = (& $msysBash -lc "cygpath -u '$icuScript'").Trim()
 $icuScriptContents = @(
   '#!/usr/bin/env bash'
   'set -euo pipefail'
-  'msvc_bin=$(cygpath -u "${VCToolsInstallDir}bin/Hostx64/x64")'
+  ('msvc_bin=$(cygpath -u "${VCToolsInstallDir}bin/Host' + $hostArch + '/' + $Architecture + '")')
   'export PATH="$msvc_bin:/usr/local/bin:/usr/bin:/bin"'
   'echo "MSVC compiler: $(command -v cl)"'
   'echo "MSVC linker: $(command -v link)"'
   "cd '$buildUnix'"
-  "CFLAGS=-MT CXXFLAGS=-MT '$sourceUnix/source/runConfigureICU' MSYS/MSVC --build=x86_64-pc-mingw32 --host=x86_64-pc-mingw32 --prefix='$installUnix' --enable-static --disable-shared --with-data-packaging=archive --disable-tests --disable-samples --disable-extras --disable-icuio"
+  "CFLAGS=-MT CXXFLAGS=-MT '$sourceUnix/source/runConfigureICU' MSYS/MSVC --build=$icuTriple --host=$icuTriple --prefix='$installUnix' --enable-static --disable-shared --with-data-packaging=archive --disable-tests --disable-samples --disable-extras --disable-icuio"
   'make -j4'
   'make install'
 ) -join "`n"
@@ -188,7 +227,8 @@ $icuScriptContents = @(
 $icuCmd = Join-Path $temp 'build-icu.cmd'
 [IO.File]::WriteAllLines($icuCmd, @(
   '@echo off'
-  "call `"$vsDevCmd`" -arch=x64 -host_arch=x64"
+  "call `"$vsDevCmd`" -arch=$Architecture -host_arch=$hostArch"
+  'if errorlevel 1 exit /b %errorlevel%'
   "`"$msysBash`" `"$icuScriptUnix`""
   'exit /b %errorlevel%'
 ), $utf8)
@@ -199,7 +239,7 @@ if ($LASTEXITCODE -ne 0) {
   throw 'Static ICU build failed'
 }
 
-$icuDirectives = & 'C:\LLVM\bin\llvm-readobj.exe' --coff-directives (Join-Path $icuInstall 'lib/sicuuc.lib') 2>&1 | Out-String
+$icuDirectives = & (Join-Path $llvmRoot 'bin/llvm-readobj.exe') --coff-directives (Join-Path $icuInstall 'lib/sicuuc.lib') 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the static ICU runtime-library directives' }
 if ($icuDirectives -match 'RuntimeLibrary=MD_DynamicRelease' -or $icuDirectives -notmatch 'RuntimeLibrary=MT_StaticRelease') {
   throw 'Static ICU must use the MT_StaticRelease runtime library'
@@ -225,11 +265,12 @@ $fallbackMetadata = @{
 $buildCmd = Join-Path $temp 'build-jsc.cmd'
 [IO.File]::WriteAllLines($buildCmd, @(
   '@echo off'
-  "call `"$vsDevCmd`" -arch=x64 -host_arch=x64"
+  "call `"$vsDevCmd`" -arch=$Architecture -host_arch=$hostArch"
+  'if errorlevel 1 exit /b %errorlevel%'
   'set PATH=C:\ProgramData\chocolatey\bin;C:\Strawberry\perl\bin;%PATH%'
-  "set SYSTEM_ICU_LIB=%WindowsSdkDir%Lib\%WindowsSDKVersion%um\x64\icu.lib"
+  "set SYSTEM_ICU_LIB=%WindowsSdkDir%Lib\%WindowsSDKVersion%um\$Architecture\icu.lib"
   "cd /d `"$webkit`""
-  "cmake -S . -B `"$output\Release`" -G Ninja -DPORT=JSCOnly -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDEVELOPER_MODE=ON -DENABLE_STATIC_JSC=ON -DENABLE_API_TESTS=OFF -DENABLE_JIT=ON -DENABLE_DFG_JIT=ON -DENABLE_FTL_JIT=ON -DENABLE_WEBASSEMBLY=ON -DENABLE_WEBASSEMBLY_BBQJIT=ON -DENABLE_WEBASSEMBLY_OMGJIT=ON -DENABLE_SAMPLING_PROFILER=OFF -DENABLE_REMOTE_INSPECTOR=OFF -DCMAKE_C_COMPILER=C:/LLVM/bin/clang-cl.exe -DCMAKE_CXX_COMPILER=C:/LLVM/bin/clang-cl.exe -DCMAKE_C_FLAGS=/DU_DISABLE_RENAMING=1 -DCMAKE_CXX_FLAGS=/DU_DISABLE_RENAMING=1 -DCMAKE_LINKER=C:/LLVM/bin/lld-link.exe -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DICU_INCLUDE_DIR=`"$icuPrefix/include`" -DICU_DATA_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`" -DICU_I18N_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`" -DICU_UC_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`""
+  "cmake -S . -B `"$output\Release`" -G Ninja -DPORT=JSCOnly -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDEVELOPER_MODE=ON -DENABLE_STATIC_JSC=ON -DENABLE_API_TESTS=OFF $featureFlags -DENABLE_SAMPLING_PROFILER=OFF -DENABLE_REMOTE_INSPECTOR=OFF -DCMAKE_C_COMPILER=`"$llvmCmake/bin/clang-cl.exe`" -DCMAKE_CXX_COMPILER=`"$llvmCmake/bin/clang-cl.exe`" -DCMAKE_C_COMPILER_TARGET=$targetTriple -DCMAKE_CXX_COMPILER_TARGET=$targetTriple -DCMAKE_C_FLAGS=/DU_DISABLE_RENAMING=1 -DCMAKE_CXX_FLAGS=/DU_DISABLE_RENAMING=1 -DCMAKE_LINKER=`"$llvmCmake/bin/lld-link.exe`" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DICU_INCLUDE_DIR=`"$icuPrefix/include`" -DICU_DATA_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`" -DICU_I18N_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`" -DICU_UC_LIBRARY_RELEASE=`"%SYSTEM_ICU_LIB%`""
   'if errorlevel 1 exit /b %errorlevel%'
   "cmake --build `"$output\Release`" --target jsc --parallel"
   'exit /b %errorlevel%'
@@ -241,17 +282,20 @@ $jsc = Get-ChildItem $output -Recurse -File -Filter jsc.exe | Select-Object -Fir
 if (-not $jsc) { throw 'jsc.exe not found' }
 $buildDir = $jsc.Directory.Parent.FullName
 $cmakeConfig = Get-Content "$buildDir/cmakeconfig.h" -Raw
-foreach ($feature in @('ENABLE_JIT', 'ENABLE_DFG_JIT', 'ENABLE_FTL_JIT', 'ENABLE_WEBASSEMBLY', 'ENABLE_WEBASSEMBLY_BBQJIT', 'ENABLE_WEBASSEMBLY_OMGJIT')) {
-  if ($cmakeConfig -notmatch "(?m)^#define $feature 1\r?$") { throw "Expected full-build feature is disabled: $feature" }
+$expectedJit = if ($Architecture -eq 'arm64') { 0 } else { 1 }
+foreach ($feature in $jitFeatures) {
+  if ($cmakeConfig -notmatch "(?m)^#define $feature $expectedJit\r?$") { throw "Expected $feature=$expectedJit for $Architecture" }
 }
+$expectedCLoop = if ($Architecture -eq 'arm64') { 1 } else { 0 }
+if ($cmakeConfig -notmatch "(?m)^#define ENABLE_C_LOOP $expectedCLoop\r?$") { throw "Expected ENABLE_C_LOOP=$expectedCLoop for $Architecture" }
 foreach ($feature in @('ENABLE_SAMPLING_PROFILER', 'ENABLE_REMOTE_INSPECTOR')) {
   if ($cmakeConfig -notmatch "(?m)^#define $feature 0\r?$") { throw "Expected production-only feature is enabled: $feature" }
 }
 $jscLibrary = Join-Path $buildDir 'lib/JavaScriptCore.lib'
 if (-not (Test-Path $jscLibrary)) { throw 'JavaScriptCore.lib not found' }
 $embedderDir = Join-Path $buildDir 'cottontail-embedder'
-$env:LLVM_LIB = 'C:\LLVM\bin\llvm-lib.exe'
-$env:LLVM_NM = 'C:\LLVM\bin\llvm-nm.exe'
+$env:LLVM_LIB = Join-Path $llvmRoot 'bin/llvm-lib.exe'
+$env:LLVM_NM = Join-Path $llvmRoot 'bin/llvm-nm.exe'
 node (Join-Path $root 'scripts/build-embedder.js') $buildDir $embedderDir
 if ($LASTEXITCODE -ne 0) { throw 'Cottontail JSC embedder build failed' }
 $embedderLibrary = Join-Path $embedderDir 'CottontailJSCEmbedder.lib'
@@ -260,15 +304,28 @@ $embedderManifest = Join-Path $embedderDir 'embedder-manifest.json'
 if (-not (Test-Path $embedderLibrary)) { throw 'CottontailJSCEmbedder.lib not found' }
 if (-not (Test-Path $embedderHeader)) { throw 'cottontail-jsc-embedder.h not found' }
 if (-not (Test-Path $embedderManifest)) { throw 'embedder-manifest.json not found' }
+$expectedMachine = if ($Architecture -eq 'arm64') { 'IMAGE_FILE_MACHINE_ARM64' } else { 'IMAGE_FILE_MACHINE_AMD64' }
+$headers = & (Join-Path $llvmRoot 'bin/llvm-readobj.exe') --file-headers $jsc.FullName $jscLibrary $embedderLibrary (Join-Path $fallback 'icuuc.lib') 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect Windows JSC/ICU binary architectures' }
+$machines = [regex]::Matches($headers, 'Machine: (IMAGE_FILE_MACHINE_[A-Z0-9_]+)')
+if ($machines.Count -eq 0) { throw 'No PE/COFF architecture headers found' }
+foreach ($machine in $machines) {
+  if ($machine.Groups[1].Value -ne $expectedMachine) { throw "Wrong $Architecture SDK machine type: $($machine.Groups[1].Value)" }
+}
 node (Join-Path $root 'scripts/verify-windows-icu-contract.js') `
-  'C:\LLVM\bin\llvm-nm.exe' `
+  $env:LLVM_NM `
   $jscLibrary `
   (Join-Path $icuInstall 'lib/sicuuc.lib') `
   (Join-Path $icuInstall 'lib/sicuin.lib') `
   (Join-Path $icuInstall 'lib/sicudt.lib')
 if ($LASTEXITCODE -ne 0) { throw 'Windows ICU bridge contract verification failed' }
 $smokeTest = Join-Path $temp 'jsc-smoke-test.js'
-$smokeSource = 'if(new Intl.NumberFormat("fr-FR",{useGrouping:false,minimumFractionDigits:1}).format(1.5)!=="1,5")throw new Error("Intl failed");if("e\u0301".normalize("NFC")!=="\u00e9")throw new Error("normalization failed");const w=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,7,1,3,97,110,115,0,0,10,6,1,4,0,65,42,11]);if(new WebAssembly.Instance(new WebAssembly.Module(w)).exports.ans()!==42)throw new Error("WebAssembly failed");'
+$smokeSource = 'if(new Intl.NumberFormat("fr-FR",{useGrouping:false,minimumFractionDigits:1}).format(1.5)!=="1,5")throw new Error("Intl failed");if("e\u0301".normalize("NFC")!=="\u00e9")throw new Error("normalization failed");let sum=0;for(let i=0;i<100000;i++)sum+=i;if(sum!==4999950000)throw new Error("execution failed");'
+if ($Architecture -eq 'arm64') {
+  $smokeSource += 'if(typeof WebAssembly!=="undefined")throw new Error("C_LOOP unexpectedly exposes WebAssembly");'
+} else {
+  $smokeSource += 'const w=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,7,1,3,97,110,115,0,0,10,6,1,4,0,65,42,11]);if(new WebAssembly.Instance(new WebAssembly.Module(w)).exports.ans()!==42)throw new Error("WebAssembly failed");'
+}
 [IO.File]::WriteAllText($smokeTest, "$smokeSource`n", $utf8)
 & $jsc.FullName $smokeTest
 if ($LASTEXITCODE -ne 0) { throw 'Windows JSC smoke test failed' }
@@ -296,7 +353,7 @@ $packagedStaticLibraries = @(
   (Join-Path $packageDir 'lib/cottontail-icu/icuuc.lib')
 )
 & node (Join-Path $root 'scripts/verify-windows-static-link-contract.js') `
-  'C:\LLVM\bin\llvm-nm.exe' `
+  $env:LLVM_NM `
   $packagedEmbedderLibrary `
   @packagedStaticLibraries
 if ($LASTEXITCODE -ne 0) { throw 'Windows static embedder link contract verification failed' }
@@ -310,4 +367,4 @@ $archiveOut = Join-Path $release "$artifactName.tar.gz"
 tar -C $temp -czf $archiveOut $artifactName
 $hash = (Get-FileHash $archiveOut -Algorithm SHA256).Hash.ToLowerInvariant()
 [IO.File]::WriteAllText("$archiveOut.sha256", "$hash  $artifactName.tar.gz`n", $utf8)
-Copy-Item (Join-Path $fallback 'icudt70l.dat') (Join-Path $release 'icudt70l-windows-x64.dat')
+Copy-Item (Join-Path $fallback 'icudt70l.dat') (Join-Path $release "icudt70l-windows-$Architecture.dat")
