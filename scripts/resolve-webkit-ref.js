@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
-let webkitRef = process.env.WEBKIT_REF?.trim();
-if (!webkitRef) {
+const pinned = JSON.parse(readFileSync(new URL('./webkit-ref.json', import.meta.url), 'utf8'));
+const requested = process.env.WEBKIT_REF?.trim();
+let webkitRef = requested || pinned.ref;
+if (webkitRef === 'latest') {
+  webkitRef = undefined;
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
   if (!token) {
     throw new Error(
@@ -60,6 +63,9 @@ const remote = execFileSync(
 if (remote.length === 0) throw new Error(`Upstream WebKit tag does not exist: ${webkitRef}`);
 const peeled = remote.find((line) => line.endsWith(`refs/tags/${webkitRef}^{}`));
 const webkitSha = (peeled ?? remote[0]).split(/\s+/)[0];
+if (webkitRef === pinned.ref && webkitSha !== pinned.sha) {
+  throw new Error(`Pinned WebKit tag changed: expected ${pinned.sha}, got ${webkitSha}`);
+}
 
 const metadata = {
   schema: 1,

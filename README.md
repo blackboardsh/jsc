@@ -46,12 +46,13 @@ Cottontail, and the required symbol contract is published under
 
 ## GitHub Actions build and publishing
 
-GitHub Actions resolves the newest upstream `WebKit-*` tag, checks out WebKit directly
-with the large test suites excluded, and builds all five native targets. Set
-the `webkit_ref` manual-workflow input to build an exact tag instead. Automatic
-selection orders tags by upstream commit date rather than the numeric-looking tag name;
-the workflow uses its built-in `GITHUB_TOKEN` to query GitHub's GraphQL API. No
-custom GitHub token is required.
+GitHub Actions builds the WebKit tag and commit recorded in
+`scripts/webkit-ref.json`, with the large test suites excluded. The pin matches
+Cottontail's current SDK baseline and keeps unrelated upstream changes out of
+platform builds. Update the pin when an upstream upgrade passes all five targets.
+Set the `webkit_ref` manual-workflow input to another exact tag to test an upgrade,
+or to `latest` to select the newest tag by upstream commit date using the
+workflow's built-in `GITHUB_TOKEN`. No custom GitHub token is required.
 
 The workflow can also be run manually from `main`. A new publication requires a
 new JSC repository commit: the repository revision is the immutable build key,
