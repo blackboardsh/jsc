@@ -85,6 +85,7 @@ done
     unset JSC_LOCAL_BUILD JSC_LOCAL_ICU_KEY JSC_ALLOW_WEBKIT_FORK
     "$jsc_binary" -e 'const n=new Intl.NumberFormat("fr-FR",{useGrouping:false,minimumFractionDigits:1});if(n.format(1.5)!=="1,5")throw new Error("Intl failed");if("e\u0301".normalize("NFC")!=="é")throw new Error("normalization failed");const w=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,7,1,3,97,110,115,0,0,10,6,1,4,0,65,42,11]);if(new WebAssembly.Instance(new WebAssembly.Module(w)).exports.ans()!==42)throw new Error("WebAssembly failed")'
 )
+node "$root/scripts/test-jit-tiers.js" "$jsc_binary"
 if [[ "$TARGET_OS" == linux ]]; then
     ! ldd "$jsc_binary" | grep -q 'libicu'
     ! nm -u "$jsc_build_dir/lib/libJavaScriptCore.a" | grep -E ' U u[a-zA-Z0-9_]+_[0-9]+$'

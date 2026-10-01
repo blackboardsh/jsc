@@ -7,19 +7,20 @@ for the Cottontail target matrix:
 - Linux x64
 - Linux ARM64
 - Windows x64 (also usable through Windows-on-ARM x64 emulation)
-- Windows ARM64 (C_LOOP interpreter, without JIT or WebAssembly)
+- Windows ARM64
 
-The macOS, Linux, and Windows x64 SDKs enable the complete Baseline, DFG, FTL,
-and WebAssembly JIT stack. Windows ARM64 initially uses the C_LOOP interpreter
-with JIT and WebAssembly disabled; the release manifest records these execution
-capabilities explicitly. Sampling profiler, remote inspector, and API tests are
-disabled on every target. ARM64 runtime consumers must benchmark this interpreter
-before replacing their existing x64 JIT runtime.
+All five SDKs enable the Baseline, DFG, FTL, and WebAssembly JIT stack. The
+release manifest records these execution capabilities explicitly. Build checks
+verify actual Baseline, DFG, and FTL execution and exercise garbage collection,
+type changes, and exceptions through compiled code. Sampling profiler, remote
+inspector, and API tests are disabled on every target.
 
 Windows ARM64 JSC and ICU build and run smoke tests natively on `windows-11-arm`.
 The separate Zig dependencies cross-compile on x64 runners. The ARM64 port
-backports CPU, context, and calling-convention changes from upstream WebKit
-commit `2bff772c7eeb205bb66618d4faf7f712fdfb626c`; the JIT port is a separate track.
+backports CPU, context, calling conventions, assembly interpreter, and JIT changes
+from upstream WebKit commit `2bff772c7eeb205bb66618d4faf7f712fdfb626c`, plus Windows
+CPU-feature detection from `fc480fe9b885140bf50e15b3166494063c0414dd` adapted to our
+pinned WebKit version. The earlier GC copy/move regression fix remains applied.
 
 ## ICU contract
 

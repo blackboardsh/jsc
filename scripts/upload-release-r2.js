@@ -79,9 +79,7 @@ const manifestObject = {
   },
   platforms: Object.fromEntries(artifacts.map((artifact) => [artifact.platform, {
     ...(artifact.platform.startsWith('windows-') ? { msvcRuntime: 'MT' } : {}),
-    execution: artifact.platform === 'windows-arm64'
-      ? { interpreter: 'c-loop', jit: false, webAssembly: false }
-      : { interpreter: 'llint', jit: true, webAssembly: true },
+    execution: { interpreter: 'llint', jit: true, webAssembly: true },
     archive: {
       url: `${publicBaseUrl}/${snapshotKey(artifact.platform)}`,
       sha256: artifact.checksum,

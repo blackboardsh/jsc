@@ -1,0 +1,329 @@
+From: Sosuke Suzuki <sosuke@bun.sh>
+Subject: Backport Windows ARM64 assembly interpreter and JIT support
+
+Remaining JIT changes from upstream WebKit commit
+2bff772c7eeb205bb66618d4faf7f712fdfb626c, applied after windows-arm64.patch.
+https://bugs.webkit.org/show_bug.cgi?id=307310
+
+Windows CPU feature detection is adapted from upstream
+fc480fe9b885140bf50e15b3166494063c0414dd for the features in this WebKit pin.
+
+diff --git a/Source/JavaScriptCore/CMakeLists.txt b/Source/JavaScriptCore/CMakeLists.txt
+index 346c8703fb8fa..d08a7ac1fb553 100644
+--- a/Source/JavaScriptCore/CMakeLists.txt
++++ b/Source/JavaScriptCore/CMakeLists.txt
+@@ -1715,6 +1715,19 @@ if (CMAKE_COMPILER_IS_GNUCXX AND GCC_OFFLINEASM_SOURCE_MAP)
+         COMPILE_OPTIONS "-fno-lto")
+ endif ()
+ 
++# Windows ARM64: Disable unwind tables to work around LLVM bug #47432
++# (alignment directives in inline asm break SEH unwind info calculation)
++if (WIN32 AND WTF_CPU_ARM64)
++    target_compile_options(LowLevelInterpreterLib PRIVATE /clang:-fno-unwind-tables)
++
++    # Also disable for other files with alignment directives in inline asm
++    set_source_files_properties(
++        assembler/MacroAssemblerARM64.cpp
++        jit/ThunkGenerators.cpp
++        PROPERTIES COMPILE_FLAGS "/clang:-fno-unwind-tables"
++    )
++endif ()
++
+ # When building JavaScriptCore as an object library, we need to make sure the
+ # lowlevelinterpreter lib objects get propogated.
+ if (${JavaScriptCore_LIBRARY_TYPE} STREQUAL "OBJECT")
+diff --git a/Source/JavaScriptCore/assembler/ARM64Assembler.h b/Source/JavaScriptCore/assembler/ARM64Assembler.h
+index 94d85144b2388..96d50ac63e283 100644
+--- a/Source/JavaScriptCore/assembler/ARM64Assembler.h
++++ b/Source/JavaScriptCore/assembler/ARM64Assembler.h
+@@ -329,7 +329,7 @@ class ARM64Assembler {
+         JumpCompareAndBranchFixedSize = JUMP_ENUM_WITH_SIZE(7, 2 * sizeof(uint32_t)),
+         JumpTestBitFixedSize = JUMP_ENUM_WITH_SIZE(8, 2 * sizeof(uint32_t)),
+     };
+-    enum JumpLinkType {
++    enum JumpLinkType : uint8_t {
+         LinkInvalid = JUMP_ENUM_WITH_SIZE(0, 0),
+         LinkJumpNoCondition = JUMP_ENUM_WITH_SIZE(1, 1 * sizeof(uint32_t)),
+         LinkJumpConditionDirect = JUMP_ENUM_WITH_SIZE(2, 1 * sizeof(uint32_t)),
+@@ -465,9 +465,13 @@ class ARM64Assembler {
+                 BranchType m_branchType : 2 { BranchType_JMP };
+             } realTypes { };
+             struct CopyTypes {
++#if OS(WINDOWS)
++                uint64_t content[5];
++#else
+                 uint64_t content[3];
++#endif
+             } copyTypes;
+-            static_assert(sizeof(RealTypes) == sizeof(CopyTypes), "LinkRecord's CopyStruct size equals to RealStruct");
++            static_assert(sizeof(RealTypes) <= sizeof(CopyTypes), "LinkRecord's CopyStruct size must be <= CopyStruct");
+         } data;
+     };
+ 
+@@ -3947,6 +3951,8 @@ class ARM64Assembler {
+             linuxPageFlush(current, current + page);
+ 
+         linuxPageFlush(current, end);
++#elif OS(WINDOWS)
++        FlushInstructionCache(GetCurrentProcess(), code, size);
+ #else
+ #error "The cacheFlush support is missing on this platform."
+ #endif
+diff --git a/Source/JavaScriptCore/assembler/ARM64Registers.h b/Source/JavaScriptCore/assembler/ARM64Registers.h
+index f2ed8cf24e2f4..1e460a3aa388d 100644
+--- a/Source/JavaScriptCore/assembler/ARM64Registers.h
++++ b/Source/JavaScriptCore/assembler/ARM64Registers.h
+@@ -41,7 +41,7 @@
+ // beyond what you would save by the platform-agnostic "preserve return address" and "restore
+ // return address" operations in CCallHelpers.
+ 
+-#if !OS(DARWIN)
++#if OS(LINUX)
+ #define FOR_EACH_GP_REGISTER(macro)                             \
+     /* Parameter/result registers. */                           \
+     macro(x0,  "x0"_s,  0, 0)                                     \
+diff --git a/Source/JavaScriptCore/assembler/AbstractMacroAssembler.h b/Source/JavaScriptCore/assembler/AbstractMacroAssembler.h
+index 0911bd48c7c3c..907224ce15c82 100644
+--- a/Source/JavaScriptCore/assembler/AbstractMacroAssembler.h
++++ b/Source/JavaScriptCore/assembler/AbstractMacroAssembler.h
+@@ -305,7 +305,7 @@ class AbstractMacroAssembler : public AbstractMacroAssemblerBase {
+         {
+         }
+ 
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && CPU(X86_64)
+         template<typename ReturnType, typename... Arguments>
+         explicit TrustedImmPtr(ReturnType(SYSV_ABI *value)(Arguments...))
+             : m_value(reinterpret_cast<void*>(value))
+diff --git a/Source/JavaScriptCore/assembler/MacroAssemblerARM64.cpp b/Source/JavaScriptCore/assembler/MacroAssemblerARM64.cpp
+index 00e8a8a1e..80deaca86 100644
+--- a/Source/JavaScriptCore/assembler/MacroAssemblerARM64.cpp
++++ b/Source/JavaScriptCore/assembler/MacroAssemblerARM64.cpp
+@@ -38,6 +38,10 @@
+ #include <sys/sysctl.h>
+ #endif
+ 
++#if OS(WINDOWS)
++#include <processthreadsapi.h>
++#endif
++
+ #if OS(LINUX)
+ #include <asm/hwcap.h>
+ #if __has_include(<sys/auxv.h>)
+@@ -329,7 +333,11 @@ static_assert(JIT_PROBE_STACK_INITIALIZATION_FUNCTION_PTR_TAG == JITProbeStackIn
+ // See https://bugs.webkit.org/show_bug.cgi?id=175512 for details.
+ __asm__(
+     ".text" "\n"
++#if OS(WINDOWS)
++    ".align 4" "\n"
++#else
+     ".balign 16" "\n"
++#endif
+     ".globl " SYMBOL_STRING(ctiMasmProbeTrampoline) "\n"
+     HIDE_SYMBOL(ctiMasmProbeTrampoline) "\n"
+     SYMBOL_STRING(ctiMasmProbeTrampoline) ":" "\n"
+@@ -576,7 +584,9 @@ __asm__(
+ #else
+     "ret" "\n"
+ #endif
++#if !OS(WINDOWS)
+     ".previous" "\n"
++#endif
+ );
+ 
+ void MacroAssembler::probe(Probe::Function function, void* arg)
+@@ -660,6 +670,25 @@ void MacroAssemblerARM64::collectCPUFeatures()
+     });
+ #endif
+ 
++#if OS(WINDOWS)
++    static std::once_flag onceKey;
++    std::call_once(onceKey, [] {
++#if !defined(PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE)
++#define PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE 34
++#endif
++#if !defined(PF_ARM_V83_JSCVT_INSTRUCTIONS_AVAILABLE)
++#define PF_ARM_V83_JSCVT_INSTRUCTIONS_AVAILABLE 44
++#endif
++#if !defined(PF_ARM_V82_FP16_INSTRUCTIONS_AVAILABLE)
++#define PF_ARM_V82_FP16_INSTRUCTIONS_AVAILABLE 67
++#endif
++        s_lseCheckState = IsProcessorFeaturePresent(PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE) ? CPUIDCheckState::Set : CPUIDCheckState::Clear;
++        s_jscvtCheckState = IsProcessorFeaturePresent(PF_ARM_V83_JSCVT_INSTRUCTIONS_AVAILABLE) ? CPUIDCheckState::Set : CPUIDCheckState::Clear;
++        s_float16CheckState = IsProcessorFeaturePresent(PF_ARM_V82_FP16_INSTRUCTIONS_AVAILABLE) ? CPUIDCheckState::Set : CPUIDCheckState::Clear;
++        // Windows does not expose a processor-feature flag for FRINT.
++    });
++#endif
++
+     if (s_lseCheckState == CPUIDCheckState::NotChecked) {
+ #if HAVE(LSE_INSTRUCTION)
+         s_lseCheckState = CPUIDCheckState::Set;
+diff --git a/Source/JavaScriptCore/inspector/scripts/codegen/preprocess.pl b/Source/JavaScriptCore/inspector/scripts/codegen/preprocess.pl
+index 0b08d2aad0737..3573c338641dc 100644
+--- a/Source/JavaScriptCore/inspector/scripts/codegen/preprocess.pl
++++ b/Source/JavaScriptCore/inspector/scripts/codegen/preprocess.pl
+@@ -39,7 +39,7 @@
+ 
+ my @args = ();
+ if (!$preprocessor) {
+-    if ($Config::Config{"osname"} eq "MSWin32") {
++    if ($Config::Config{"osname"} eq "MSWin32" || $Config::Config{"osname"} eq "msys") {
+         $preprocessor = $ENV{CC} || "cl";
+         push(@args, qw(/nologo /EP /TP /C));
+     } else {
+@@ -85,7 +85,7 @@
+             sleep 1;
+         }
+     }
+-} elsif ($Config::Config{"osname"} eq "MSWin32") {
++} elsif ($Config::Config{"osname"} eq "MSWin32" || $Config::Config{"osname"} eq "msys") {
+     # Suppress STDERR so that if we're using cl.exe, the output
+     # name isn't needlessly echoed.
+     use Symbol 'gensym'; my $err = gensym;
+diff --git a/Source/JavaScriptCore/jit/ThunkGenerators.cpp b/Source/JavaScriptCore/jit/ThunkGenerators.cpp
+index cdcf5b5c99a5f..9762d61e6aa32 100644
+--- a/Source/JavaScriptCore/jit/ThunkGenerators.cpp
++++ b/Source/JavaScriptCore/jit/ThunkGenerators.cpp
+@@ -897,6 +897,23 @@ typedef MathThunkCallingConvention(*MathThunk)(MathThunkCallingConvention);
+     } \
+     static MathThunk UnaryDoubleOpWrapper(function) = &function##Thunk;
+ 
++#elif CPU(ARM64) && OS(WINDOWS)
++
++#define defineUnaryDoubleOpWrapper(function) \
++    __asm__( \
++        ".text\n" \
++        ".align 2\n" \
++        ".globl " SYMBOL_STRING(function##Thunk) "\n" \
++        HIDE_SYMBOL(function##Thunk) "\n" \
++        SYMBOL_STRING(function##Thunk) ":" "\n" \
++        "b " GLOBAL_REFERENCE(function) "\n" \
++    ); \
++    extern "C" { \
++        MathThunkCallingConvention function##Thunk(MathThunkCallingConvention); \
++        JSC_ANNOTATE_JIT_OPERATION(function##Thunk); \
++    } \
++    static MathThunk UnaryDoubleOpWrapper(function) = &function##Thunk;
++
+ #elif CPU(ARM64)
+ 
+ #define defineUnaryDoubleOpWrapper(function) \
+diff --git a/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp b/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp
+index fcec367df165a..c9a5869f96020 100644
+--- a/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp
++++ b/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp
+@@ -588,10 +588,19 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+     SYMBOL_STRING(label) ":\n"
+ #endif
+ 
++#if OS(WINDOWS) && CPU(ARM64)
++#define OFFLINE_ASM_ALIGN4B ".align 2\n"
++#else
+ #define OFFLINE_ASM_ALIGN4B ".balign 4\n"
++#endif
+ #define OFFLINE_ASM_NOALIGN ""
+ 
+-#if CPU(ARM64) || CPU(ARM64E)
++#if CPU(ARM64) && OS(WINDOWS)
++// COFF uses power-of-two alignment: .align N means 2^N bytes
++#define OFFLINE_ASM_ALIGN_TRAP_256 "\n .align 8\n"
++#define OFFLINE_ASM_ALIGN_TRAP_64 "\n .align 6\n"
++#define OFFLINE_ASM_ALIGN_TRAP(align) OFFLINE_ASM_ALIGN_TRAP_##align
++#elif CPU(ARM64) || CPU(ARM64E)
+ #define OFFLINE_ASM_ALIGN_TRAP(align) OFFLINE_ASM_BEGIN_SPACER "\n .balignl " #align ", 0xd4388e20\n" // pad with brk instructions
+ #elif CPU(X86_64)
+ #define OFFLINE_ASM_ALIGN_TRAP(align) OFFLINE_ASM_BEGIN_SPACER "\n .balign " #align ", 0xcc\n" // pad with int 3 instructions
+diff --git a/Source/JavaScriptCore/offlineasm/arm64.rb b/Source/JavaScriptCore/offlineasm/arm64.rb
+index a93aa5beefd9e..84e556f485185 100644
+--- a/Source/JavaScriptCore/offlineasm/arm64.rb
++++ b/Source/JavaScriptCore/offlineasm/arm64.rb
+@@ -1443,6 +1443,12 @@ def lowerARM64
+             $asm.puts "ldr #{operands[1].arm64Operand(:quad)}, [#{operands[1].arm64Operand(:quad)}, :got_lo12:#{operands[0].asmLabel}]"
+             $asm.putStr("#endif")
+ 
++            # On Windows, use COFF-style addressing.
++            $asm.putStr("#elif OS(WINDOWS)")
++
++            $asm.puts "adrp #{operands[1].arm64Operand(:quad)}, #{operands[0].asmLabel}"
++            $asm.puts "add #{operands[1].arm64Operand(:quad)}, #{operands[1].arm64Operand(:quad)}, :lo12:#{operands[0].asmLabel}"
++
+             # Throw a compiler error everywhere else.
+             $asm.putStr("#else")
+             $asm.putStr("#error Missing globaladdr implementation")
+diff --git a/Tools/Scripts/webkitdirs.pm b/Tools/Scripts/webkitdirs.pm
+index 36c1c602055bc..65dcbd1b22f0d 100755
+--- a/Tools/Scripts/webkitdirs.pm
++++ b/Tools/Scripts/webkitdirs.pm
+@@ -1671,7 +1671,7 @@ sub commandExists($)
+     my $command = shift;
+     my $devnull = File::Spec->devnull();
+ 
+-    if (isAnyWindows()) {
++    if (isWindows()) {
+         return exitStatus(system("where /q $command >$devnull 2>&1")) == 0;
+     }
+     return exitStatus(system("which $command >$devnull 2>&1")) == 0;
+@@ -1864,9 +1864,14 @@ sub isCygwin()
+     return ($^O eq "cygwin") || 0;
+ }
+ 
++sub isMsys()
++{
++    return ($^O eq "msys") || 0;
++}
++
+ sub isAnyWindows()
+ {
+-    return isWindows() || isCygwin();
++    return isWindows() || isCygwin() || isMsys();
+ }
+ 
+ sub determineWinVersion()
+@@ -1926,7 +1931,7 @@ sub isX86_64()
+ 
+ sub isARM64()
+ {
+-    return (architecture() eq "arm64") || 0;
++    return (lc(architecture()) eq "arm64") || 0;
+ }
+ 
+ sub isCrossCompilation()
+@@ -2674,7 +2679,7 @@ sub shouldUseFlatpak()
+ 
+ sub shouldUseVcpkg()
+ {
+-    return isWin() || (isJSCOnly() && isWindows());
++    return isWin() || (isJSCOnly() && isAnyWindows());
+ }
+ 
+ sub cmakeCachePath()
+@@ -2851,7 +2856,13 @@ sub generateBuildSystemFromCMakeProject
+ 
+     if (shouldUseVcpkg()) {
+         push @args, '-DCMAKE_TOOLCHAIN_FILE="' . $ENV{VCPKG_ROOT} . '\\scripts\\buildsystems\\vcpkg.cmake"';
+-        push @args, '-DVCPKG_TARGET_TRIPLET=x64-windows-webkit'
++        if (architecture() eq "ARM64") {
++            push @args, '-DVCPKG_TARGET_TRIPLET=arm64-windows-static-md';
++        } else {
++            push @args, '-DVCPKG_TARGET_TRIPLET=x64-windows-webkit'
++        }
++        push @args, '-DCMAKE_C_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe"';
++        push @args, '-DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe"';
+     } elsif (isPlayStation()) {
+         my $toolChainFile = $ENV{'CMAKE_TOOLCHAIN_FILE'} || "Platform/PlayStation5";
+         push @args, '-DCMAKE_TOOLCHAIN_FILE=' . $toolChainFile;
+diff --git a/Tools/Scripts/webkitperl/BuildSubproject.pm b/Tools/Scripts/webkitperl/BuildSubproject.pm
+index 51fb572fc7eb9..93dce009ad415 100644
+--- a/Tools/Scripts/webkitperl/BuildSubproject.pm
++++ b/Tools/Scripts/webkitperl/BuildSubproject.pm
+@@ -119,10 +119,6 @@ if ($showHelp) {
+    exit 1;
+ }
+ 
+-if (isAnyWindows()) {
+-    $ftlJIT = 0;
+-}
+-
+ if ($buildDir && !isCMakeBuild()) {
+     print STDERR "--build-dir is currently only supported for cmake builds";
+     exit 1;

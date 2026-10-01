@@ -20,9 +20,7 @@ $llvmCmake = $llvmRoot.Replace('\', '/')
 $targetTriple = if ($Architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
 $icuTriple = if ($Architecture -eq 'arm64') { 'aarch64-pc-mingw32' } else { 'x86_64-pc-mingw32' }
 $jitFeatures = @('ENABLE_JIT', 'ENABLE_DFG_JIT', 'ENABLE_FTL_JIT', 'ENABLE_WEBASSEMBLY', 'ENABLE_WEBASSEMBLY_BBQJIT', 'ENABLE_WEBASSEMBLY_OMGJIT')
-$jitValue = if ($Architecture -eq 'arm64') { 'OFF' } else { 'ON' }
-$cLoopValue = if ($Architecture -eq 'arm64') { 'ON' } else { 'OFF' }
-$featureFlags = (($jitFeatures | ForEach-Object { "-D$_=$jitValue" }) -join ' ') + " -DENABLE_C_LOOP=$cLoopValue"
+$featureFlags = (($jitFeatures | ForEach-Object { "-D$_=ON" }) -join ' ') + ' -DENABLE_C_LOOP=OFF'
 $icuHash = '8d205428c17bf13bb535300669ed28b338a157b1c01ae66d31d0d3e2d47c3fd5'
 $localBuild = $env:JSC_LOCAL_BUILD -eq '1'
 
@@ -155,14 +153,16 @@ try {
   Copy-Item (Join-Path $root 'bridge/windows-system-icu.h') 'Source/JavaScriptCore/runtime/CottontailWindowsSystemICU.h'
 
   if ($Architecture -eq 'arm64') {
-    $arm64Patch = Join-Path $root 'patches/windows-arm64-c-loop.patch'
-    $ErrorActionPreference = 'Continue'
-    git apply --reverse --check $arm64Patch 2>$null
-    $alreadyApplied = $LASTEXITCODE -eq 0
-    $ErrorActionPreference = 'Stop'
-    if (-not $alreadyApplied) {
-      git apply $arm64Patch
-      if ($LASTEXITCODE -ne 0) { throw 'Windows ARM64 context and calling-convention patch failed' }
+    foreach ($patchName in @('windows-arm64.patch', 'windows-arm64-jit.patch')) {
+      $arm64Patch = Join-Path $root "patches/$patchName"
+      $ErrorActionPreference = 'Continue'
+      git apply --reverse --check $arm64Patch 2>$null
+      $alreadyApplied = $LASTEXITCODE -eq 0
+      $ErrorActionPreference = 'Stop'
+      if (-not $alreadyApplied) {
+        git apply $arm64Patch
+        if ($LASTEXITCODE -ne 0) { throw "Windows ARM64 patch failed: $patchName" }
+      }
     }
   }
 } finally {
@@ -282,12 +282,10 @@ $jsc = Get-ChildItem $output -Recurse -File -Filter jsc.exe | Select-Object -Fir
 if (-not $jsc) { throw 'jsc.exe not found' }
 $buildDir = $jsc.Directory.Parent.FullName
 $cmakeConfig = Get-Content "$buildDir/cmakeconfig.h" -Raw
-$expectedJit = if ($Architecture -eq 'arm64') { 0 } else { 1 }
 foreach ($feature in $jitFeatures) {
-  if ($cmakeConfig -notmatch "(?m)^#define $feature $expectedJit\r?$") { throw "Expected $feature=$expectedJit for $Architecture" }
+  if ($cmakeConfig -notmatch "(?m)^#define $feature 1\r?$") { throw "Expected $feature=1 for $Architecture" }
 }
-$expectedCLoop = if ($Architecture -eq 'arm64') { 1 } else { 0 }
-if ($cmakeConfig -notmatch "(?m)^#define ENABLE_C_LOOP $expectedCLoop\r?$") { throw "Expected ENABLE_C_LOOP=$expectedCLoop for $Architecture" }
+if ($cmakeConfig -notmatch "(?m)^#define ENABLE_C_LOOP 0\r?$") { throw "Expected ENABLE_C_LOOP=0 for $Architecture" }
 foreach ($feature in @('ENABLE_SAMPLING_PROFILER', 'ENABLE_REMOTE_INSPECTOR')) {
   if ($cmakeConfig -notmatch "(?m)^#define $feature 0\r?$") { throw "Expected production-only feature is enabled: $feature" }
 }
@@ -321,16 +319,14 @@ node (Join-Path $root 'scripts/verify-windows-icu-contract.js') `
 if ($LASTEXITCODE -ne 0) { throw 'Windows ICU bridge contract verification failed' }
 $smokeTest = Join-Path $temp 'jsc-smoke-test.js'
 $smokeSource = 'if(new Intl.NumberFormat("fr-FR",{useGrouping:false,minimumFractionDigits:1}).format(1.5)!=="1,5")throw new Error("Intl failed");if("e\u0301".normalize("NFC")!=="\u00e9")throw new Error("normalization failed");let sum=0;for(let i=0;i<100000;i++)sum+=i;if(sum!==4999950000)throw new Error("execution failed");'
-if ($Architecture -eq 'arm64') {
-  $smokeSource += 'if(typeof WebAssembly!=="undefined")throw new Error("C_LOOP unexpectedly exposes WebAssembly");'
-} else {
-  $smokeSource += 'const w=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,7,1,3,97,110,115,0,0,10,6,1,4,0,65,42,11]);if(new WebAssembly.Instance(new WebAssembly.Module(w)).exports.ans()!==42)throw new Error("WebAssembly failed");'
-}
+$smokeSource += 'const w=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,7,1,3,97,110,115,0,0,10,6,1,4,0,65,42,11]);if(new WebAssembly.Instance(new WebAssembly.Module(w)).exports.ans()!==42)throw new Error("WebAssembly failed");'
 [IO.File]::WriteAllText($smokeTest, "$smokeSource`n", $utf8)
 & $jsc.FullName $smokeTest
 if ($LASTEXITCODE -ne 0) { throw 'Windows JSC smoke test failed' }
 & $jsc.FullName (Join-Path $root 'scripts/test-gc-memory.js')
 if ($LASTEXITCODE -ne 0) { throw 'Windows JSC GC memory regression failed' }
+node (Join-Path $root 'scripts/test-jit-tiers.js') $jsc.FullName
+if ($LASTEXITCODE -ne 0) { throw 'Windows JSC tier execution tests failed' }
 $packageDir = Join-Path $temp $artifactName
 New-Item -ItemType Directory -Force -Path "$packageDir/bin", "$packageDir/lib", "$packageDir/share/cottontail-jsc", "$packageDir/include/JavaScriptCore", "$packageDir/include/wtf", "$packageDir/include/bmalloc" | Out-Null
 New-Item -ItemType Directory -Force -Path "$packageDir/include/cottontail" | Out-Null
@@ -364,6 +360,16 @@ Copy-Item "$buildDir/JavaScriptCore/Headers/JavaScriptCore/*" "$packageDir/inclu
 Copy-Item "$buildDir/WTF/Headers/wtf/*" "$packageDir/include/wtf/" -Recurse
 if (Test-Path "$buildDir/bmalloc/Headers/bmalloc") { Copy-Item "$buildDir/bmalloc/Headers/bmalloc/*" "$packageDir/include/bmalloc/" -Recurse }
 [IO.File]::WriteAllText("$packageDir/WEBKIT_REVISION", "$($metadata.webkitSha)`n", $utf8)
+$embedderTestCmd = Join-Path $temp 'test-embedder.cmd'
+[IO.File]::WriteAllLines($embedderTestCmd, @(
+  '@echo off'
+  "call `"$vsDevCmd`" -arch=$Architecture -host_arch=$hostArch"
+  'if errorlevel 1 exit /b %errorlevel%'
+  "node `"$root/scripts/test-windows-embedder.js`" `"$packageDir`" `"$llvmRoot`" `"$temp/embedder-test`""
+  'exit /b %errorlevel%'
+), $utf8)
+& cmd.exe /c $embedderTestCmd
+if ($LASTEXITCODE -ne 0) { throw 'Packaged Windows JSC embedder runtime tests failed' }
 $release = Join-Path $root 'release'
 $archiveOut = Join-Path $release "$artifactName.tar.gz"
 tar -C $temp -czf $archiveOut $artifactName
