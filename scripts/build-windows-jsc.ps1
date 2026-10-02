@@ -138,6 +138,19 @@ try {
     if ($watchdogPatchApplyExitCode -ne 0) { throw 'Watchdog callback rearming patch failed' }
   }
 
+  $windowsStackPatch = Join-Path $root 'patches/windows-active-stack-precommit.patch'
+  $ErrorActionPreference = 'Continue'
+  git apply --reverse --check $windowsStackPatch 2>$null
+  $windowsStackReverseExitCode = $LASTEXITCODE
+  $ErrorActionPreference = 'Stop'
+  if ($windowsStackReverseExitCode -ne 0) {
+    $ErrorActionPreference = 'Continue'
+    git apply $windowsStackPatch
+    $windowsStackApplyExitCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($windowsStackApplyExitCode -ne 0) { throw 'Windows active-stack precommit patch failed' }
+  }
+
   $windowsSystemIcuPatch = Join-Path $root 'patches/windows-system-icu.patch'
   $ErrorActionPreference = 'Continue'
   git apply --reverse --check $windowsSystemIcuPatch 2>$null

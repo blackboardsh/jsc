@@ -136,6 +136,34 @@ if [[ "$TARGET_OS" == linux ]]; then
     node "$root/scripts/test-watchdog.js" "$package_dir"
 fi
 
+# Exercise the packaged provider bridge on every Unix target before publishing.
+# Reuse the SDK compiler/ICU configuration and the shell's platform libraries.
+embedder_test="$RUNNER_TEMP/embedder-jit-$PLATFORM_KEY"
+embedder_compile_args=(-std=c++23 -O2 -DNDEBUG -DJS_NO_EXPORT=1)
+embedder_libraries=(
+    "$package_dir/lib/libCottontailJSCEmbedder.a"
+    "$package_dir/lib/libJavaScriptCore.a"
+    "$package_dir/lib/libWTF.a"
+    "$package_dir/lib/libbmalloc.a"
+)
+if [[ "$TARGET_OS" == linux ]]; then
+    embedder_compile_args+=("--gcc-install-dir=$gcc_install_dir" -stdlib=libstdc++)
+    embedder_link_args=(
+        -Wl,--start-group "${embedder_libraries[@]}" "$icu_uc" "$icu_i18n" "$icu_data"
+        -Wl,--end-group -Wl,--gc-sections -pthread -ldl -latomic
+    )
+else
+    embedder_compile_args+=(-mmacosx-version-min=14.0)
+    embedder_link_args=(
+        "${embedder_libraries[@]}" "$icu_system_library"
+        -framework Cocoa -framework CoreFoundation -framework Security -lreadline -pthread
+    )
+fi
+"$CXX" "${embedder_compile_args[@]}" \
+    -I"$package_dir/include" -I"$package_dir/include/cottontail" \
+    "$root/tests/embedder-jit.cpp" "${embedder_link_args[@]}" -o "$embedder_test"
+node "$root/scripts/test-embedder.js" "$embedder_test"
+
 archive="$root/release/$ARTIFACT_NAME.tar.gz"
 tar -C "$RUNNER_TEMP" -czf "$archive" "$ARTIFACT_NAME"
 shasum -a 256 "$archive" > "$archive.sha256"

@@ -51,6 +51,9 @@ GitHub Actions builds the WebKit tag and commit recorded in
 `scripts/webkit-ref.json`, with the large test suites excluded. The pin matches
 Cottontail's current SDK baseline and keeps unrelated upstream changes out of
 platform builds. Update the pin when an upstream upgrade passes all five targets.
+Every target also links the packaged embedder bridge into `tests/embedder-jit.cpp`
+to check callbacks, lazy bytecode and source lifetime after collection, exceptions,
+and concurrent contexts before publishing.
 Set the `webkit_ref` manual-workflow input to another exact tag to test an upgrade,
 or to `latest` to select the newest tag by upstream commit date using the
 workflow's built-in `GITHUB_TOKEN`. No custom GitHub token is required.
@@ -146,3 +149,11 @@ timers to abort while opening editors in Dash Desktop.
 An additional case schedules and stops actual `RunLoop` timers, then destroys
 the child before the retained parent. It validates the linked `libWTF.a`, so a
 patched header paired with a stale compiled timer object still fails the check.
+
+Windows builds also run `tests/windows-stack-precommit.cpp` through the packaged
+SDK test runner. Fresh threads reserve 128 MiB, 32 MiB, and 1 MiB stacks and check
+their actual committed pages after context creation, execution, and destruction.
+The patch commits the active JavaScript stack budget when acquiring the VM lock;
+constructing a VM or releasing its lock no longer commits the entire reservation.
+The regression covers first entry on small stacks, large JavaScript frames,
+native callback reentry, caught recursion overflow, and context recreation.

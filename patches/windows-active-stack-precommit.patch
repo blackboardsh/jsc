@@ -1,0 +1,75 @@
+diff --git a/Source/JavaScriptCore/runtime/VM.cpp b/Source/JavaScriptCore/runtime/VM.cpp
+index 0a593d47e..5696d5033 100644
+--- a/Source/JavaScriptCore/runtime/VM.cpp
++++ b/Source/JavaScriptCore/runtime/VM.cpp
+@@ -168,6 +168,10 @@
+ #include <wtf/darwin/DispatchExtras.h>
+ #endif
+ 
++#if OS(WINDOWS)
++#include <windows.h>
++#endif
++
+ namespace JSC {
+ 
+ DEFINE_ALLOCATOR_WITH_HEAP_IDENTIFIER(VM);
+@@ -1098,6 +1102,25 @@ size_t VM::updateSoftReservedZoneSize(size_t softReservedZoneSize)
+ static void preCommitStackMemory(void* stackLimit)
+ {
+     const int pageSize = 4096;
++    const auto firstProbe = reinterpret_cast<uintptr_t>(&stackLimit);
++    const auto limit = reinterpret_cast<uintptr_t>(stackLimit);
++    if (firstProbe <= limit)
++        return;
++
++    // A previous entry may have already committed this span. Query the lowest
++    // address the loop would touch: its page offset can differ from stackLimit's.
++    // VirtualQuery describes consecutive pages starting at the queried page,
++    // so also require that this committed, non-guard region reaches our frame.
++    // Recheck the current stack every time to handle migration and deeper entry.
++    const auto lastProbe = firstProbe - ((firstProbe - limit - 1) / pageSize) * pageSize;
++    MEMORY_BASIC_INFORMATION region { };
++    if (VirtualQuery(reinterpret_cast<void*>(lastProbe), &region, sizeof(region)) == sizeof(region)
++        && region.State == MEM_COMMIT && region.Protect == PAGE_READWRITE) {
++        const auto base = reinterpret_cast<uintptr_t>(region.BaseAddress);
++        if (firstProbe >= base && firstProbe - base < region.RegionSize)
++            return;
++    }
++
+     for (volatile char* p = reinterpret_cast<char*>(&stackLimit); p > stackLimit; p -= pageSize) {
+         char ch = *p;
+         *p = ch;
+@@ -1127,20 +1150,23 @@ void VM::updateStackLimits()
+         m_stackLimit = stack.recursionLimit(reservedZoneSize);
+     }
+ 
+-    if (lastSoftStackLimit != newSoftStackLimit) {
++    if (lastSoftStackLimit != newSoftStackLimit)
+         traps().setStackSoftLimit(newSoftStackLimit);
+ #if OS(WINDOWS)
+-        // We only need to precommit stack memory dictated by the VM::softStackLimit() limit.
+-        // This is because VM::softStackLimit() applies to stack usage by LLINT asm or JIT
+-        // generated code which can allocate stack space that the C++ compiler does not know
+-        // about. As such, we have to precommit that stack memory manually.
+-        //
+-        // In contrast, we do not need to worry about VM::m_stackLimit because that limit is
+-        // used exclusively by C++ code, and the C++ compiler will automatically commit the
+-        // needed stack pages.
++    // Without an active entry, the soft limit describes almost the entire OS
++    // stack reservation. This happens during construction and when JSLock is
++    // released. Committing that inactive limit turns a large virtual reservation
++    // into resident memory even if JavaScript only needs a few stack pages.
++    // JSLock sets the entry pointer before executing JS, so commit only then,
++    // after maxPerThreadStackUsage has constrained the active soft limit.
++    //
++    // Do this even when the limit is unchanged: on a stack smaller than
++    // maxPerThreadStackUsage, the first active limit can equal the inactive one.
++    // LLInt/JIT frames still need their pages committed before first execution.
++    // C++ frames instead use the compiler's ordinary stack probes.
++    if (m_stackPointerAtVMEntry)
+         preCommitStackMemory(newSoftStackLimit);
+ #endif
+-    }
+ }
+ 
+ #if ENABLE(DFG_JIT)

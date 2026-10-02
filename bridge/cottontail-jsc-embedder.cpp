@@ -104,6 +104,7 @@ public:
     {
         return m_cached_bytecode;
     }
+    void releaseCachedBytecode() { m_cached_bytecode = nullptr; }
 
 private:
     CtCachedSourceProvider(
@@ -330,6 +331,10 @@ extern "C" int ct_jsc_embedder_bytecode_evaluate(
     JSC::SourceCode source_code(provider.copyRef());
     WTF::NakedPtr<JSC::Exception> internal_exception;
     JSC::evaluate(global_object, source_code, JSC::jsUndefined(), internal_exception);
+    // Lazy function decoders retain their own bytecode reference. Keeping one
+    // on the source provider would pin the entire payload for as long as any
+    // function retains its source, even after all decoders have been released.
+    provider->releaseCachedBytecode();
     if (internal_exception) {
         if (exception)
             *exception = toRef(global_object, internal_exception->value());

@@ -3,8 +3,11 @@
 #include "cottontail-jsc-embedder.h"
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <thread>
 #include <vector>
+
+extern "C" void JSSynchronousGarbageCollectForDebugging(JSContextRef);
 
 static CtJscEncodedValue nativeSum(CtJscInvocation* invocation, void*)
 {
@@ -33,6 +36,58 @@ static bool reportException(JSContextRef context, JSValueRef exception)
         JSStringRelease(text);
     }
     return true;
+}
+
+static bool exerciseBytecodeLifetime(JSContextRef context)
+{
+    constexpr size_t literalLength = 256 * 1024;
+    std::string code = "globalThis.delayedBytecodeValue = function delayedBytecodeValue() { return '";
+    code.append(literalLength, 'x');
+    code += "'; }; globalThis.delayedBytecodeError = function delayedBytecodeError() { throw new Error('lazy bytecode error'); };";
+    auto source = JSStringCreateWithUTF8CString(code.c_str());
+    auto url = JSStringCreateWithUTF8CString("file:///bytecode-lifetime.js");
+    std::string().swap(code);
+    uint8_t* bytes = nullptr;
+    size_t length = 0;
+    JSStringRef error = nullptr;
+    // Generate in another VM so evaluation must decode the supplied bytecode,
+    // rather than reuse an unlinked block already in the target's code cache.
+    auto generator = JSGlobalContextCreate(nullptr);
+    const int generated = ct_jsc_embedder_bytecode_generate(JSContextGetGroup(generator), source, url, &bytes, &length, &error);
+    JSGlobalContextRelease(generator);
+    JSValueRef exception = nullptr;
+    const int evaluated = generated || !length ? 1 : ct_jsc_embedder_bytecode_evaluate(context, source, url, bytes, length, &exception);
+    std::free(bytes);
+    JSStringRelease(source);
+    JSStringRelease(url);
+    if (error) JSStringRelease(error);
+    if (evaluated || reportException(context, exception)) return false;
+
+    // No original input buffers remain. First invoke the lazy functions only
+    // after the API has returned and a synchronous collection has completed.
+    auto check = JSStringCreateWithUTF8CString(R"JS(
+        (() => {
+            if (delayedBytecodeValue().length !== 262144) throw new Error('lazy literal');
+            if (!delayedBytecodeValue.toString().includes('xxxxxxxxxxxxxxxx')) throw new Error('lazy source');
+            let caught = false;
+            try { delayedBytecodeError(); } catch (error) {
+                caught = error.message === 'lazy bytecode error' && String(error.stack).includes('bytecode-lifetime.js');
+            }
+            if (!caught) throw new Error('lazy exception source');
+            return 42;
+        })()
+    )JS");
+    bool passed = true;
+    for (unsigned iteration = 0; iteration < 2; ++iteration) {
+        JSSynchronousGarbageCollectForDebugging(context);
+        auto value = JSEvaluateScript(context, check, nullptr, nullptr, 1, &exception);
+        if (reportException(context, exception) || !value || JSValueToNumber(context, value, nullptr) != 42) {
+            passed = false;
+            break;
+        }
+    }
+    JSStringRelease(check);
+    return passed;
 }
 
 static int exerciseContext()
@@ -76,6 +131,7 @@ static int exerciseContext()
     const auto result = ct_jsc_embedder_bytecode_evaluate(context, source, url, bytes, length, &exception);
     std::free(bytes);
     if (result || reportException(context, exception)) return 5;
+    if (!exerciseBytecodeLifetime(context)) return 7;
     JSGarbageCollect(context);
     JSStringRelease(fastName);
     JSStringRelease(legacyName);
