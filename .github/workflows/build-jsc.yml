@@ -53,6 +53,7 @@ jobs:
           scripts/immutable-release.test.mjs
           scripts/patch-checkout.test.mjs
           scripts/r2-client.test.mjs
+          scripts/verify-macos-sdk.test.mjs
           scripts/verify-windows-static-link-contract.test.mjs
 
   resolve-webkit:
@@ -100,6 +101,12 @@ jobs:
             runner: macos-26
             target_os: macos
             artifact_name: cottontail-jsc-macos-arm64
+            cc: clang
+            cxx: clang++
+          - platform: macos-x64
+            runner: macos-26-intel
+            target_os: macos
+            artifact_name: cottontail-jsc-macos-amd64
             cc: clang
             cxx: clang++
           - platform: linux-x64

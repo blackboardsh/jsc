@@ -70,6 +70,13 @@ function hostConfig() {
 			cc: "clang",
 			cxx: "clang++",
 		},
+		"darwin-x64": {
+			platformKey: "macos-x64",
+			targetOs: "macos",
+			artifactName: "cottontail-jsc-macos-amd64",
+			cc: "clang",
+			cxx: "clang++",
+		},
 		"linux-x64": {
 			platformKey: "linux-x64",
 			targetOs: "linux",
@@ -184,6 +191,7 @@ function sourceFingerprint(manifest, config) {
 		"scripts/checkout-webkit.sh",
 		"scripts/test-red-black-tree.js",
 		"scripts/test-watchdog.js",
+		"scripts/verify-macos-sdk.js",
 		"tests/red-black-tree-detach.cpp",
 		"tests/runloop-timer-detach.cpp",
 		"tests/watchdog-rearm.cpp",

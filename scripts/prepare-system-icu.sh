@@ -94,6 +94,9 @@ fallback_cc=${CC}
 fallback_cxx=${CXX}
 if [[ "$platform" == macos ]]; then
     configure_platform=MacOSX
+    # The fallback archives ship in the SDK too. Match JSC's minimum rather
+    # than inheriting the build runner's macOS version.
+    export MACOSX_DEPLOYMENT_TARGET=14.0
 else
     # ICU 70's autoconf namespace probe predates Clang 18 and reports a false
     # negative on current Ubuntu runners. Its C ABI is compiler-independent;

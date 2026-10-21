@@ -17,6 +17,18 @@ export ICU_SOURCE_SHA256=8d205428c17bf13bb535300669ed28b338a157b1c01ae66d31d0d3e
 mkdir -p "$RUNNER_TEMP" "$root/release"
 
 jsc_cxxflags="-DU_DISABLE_RENAMING=1"
+if [[ "$TARGET_OS" == macos ]]; then
+    case "$PLATFORM_KEY" in
+        macos-arm64) macos_arch=arm64 ;;
+        macos-x64) macos_arch=x86_64 ;;
+        *) echo "Unsupported macOS platform: $PLATFORM_KEY" >&2; exit 1 ;;
+    esac
+    if [[ "$(uname -m)" != "$macos_arch" ]]; then
+        echo "Expected a native $macos_arch runner for $PLATFORM_KEY" >&2
+        exit 1
+    fi
+    export MACOSX_DEPLOYMENT_TARGET=14.0
+fi
 if [[ "$TARGET_OS" == linux ]]; then
     # Match Cottontail's Clang/GNU bridge setup. The runner's LLVM package does
     # not reliably discover the machine image's GCC headers or libraries, so
@@ -46,7 +58,7 @@ else
     icu_data="$icu_system_library"
     icu_i18n="$icu_system_library"
     icu_uc="$icu_system_library"
-    platform_cmake_args="-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
+    platform_cmake_args="-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_OSX_ARCHITECTURES=$macos_arch"
 fi
 
 build_args=(--jsc-only --release)
@@ -83,6 +95,7 @@ done
     # The engine interprets JSC_* variables as runtime options. These existing
     # local-build controls belong to the surrounding build process only.
     unset JSC_LOCAL_BUILD JSC_LOCAL_ICU_KEY JSC_ALLOW_WEBKIT_FORK
+    "$jsc_binary" "$root/scripts/test-gc-memory.js"
     "$jsc_binary" -e 'const n=new Intl.NumberFormat("fr-FR",{useGrouping:false,minimumFractionDigits:1});if(n.format(1.5)!=="1,5")throw new Error("Intl failed");if("e\u0301".normalize("NFC")!=="é")throw new Error("normalization failed");const w=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,7,1,3,97,110,115,0,0,10,6,1,4,0,65,42,11]);if(new WebAssembly.Instance(new WebAssembly.Module(w)).exports.ans()!==42)throw new Error("WebAssembly failed")'
 )
 node "$root/scripts/test-jit-tiers.js" "$jsc_binary"
@@ -163,6 +176,10 @@ fi
     -I"$package_dir/include" -I"$package_dir/include/cottontail" \
     "$root/tests/embedder-jit.cpp" "${embedder_link_args[@]}" -o "$embedder_test"
 node "$root/scripts/test-embedder.js" "$embedder_test"
+
+if [[ "$TARGET_OS" == macos ]]; then
+    node "$root/scripts/verify-macos-sdk.js" "$package_dir" "$macos_arch" 14.0 "$embedder_test"
+fi
 
 archive="$root/release/$ARTIFACT_NAME.tar.gz"
 tar -C "$RUNNER_TEMP" -czf "$archive" "$ARTIFACT_NAME"

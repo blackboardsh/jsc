@@ -4,12 +4,13 @@ This repository produces static JSCOnly SDKs from upstream WebKit release tags
 for the Cottontail target matrix:
 
 - macOS ARM64
+- macOS Intel x64
 - Linux x64
 - Linux ARM64
 - Windows x64 (also usable through Windows-on-ARM x64 emulation)
 - Windows ARM64
 
-All five SDKs enable the Baseline, DFG, FTL, and WebAssembly JIT stack. The
+All six SDKs enable the Baseline, DFG, FTL, and WebAssembly JIT stack. The
 release manifest records these execution capabilities explicitly. Build checks
 verify actual Baseline, DFG, and FTL execution and exercise garbage collection,
 type changes, and exceptions through compiled code. Sampling profiler, remote
@@ -37,7 +38,7 @@ duplicated across SDKs in R2 nor accidentally copied into downstream app bundles
 Cottontail links the fallback code into its own executable, probes the operating
 system ICU first, and downloads the external database only when the installed
 ICU is absent or older than ABI 70. The data file is architecture-independent,
-and the build fan-in verifies that all five native ICU builds produced the exact
+and the build fan-in verifies that all six native ICU builds produced the exact
 same SHA-256 before publishing one canonical copy.
 
 The standalone Linux `jsc` shell uses the bridge under `bridge/` only for its
@@ -50,10 +51,14 @@ Cottontail, and the required symbol contract is published under
 GitHub Actions builds the WebKit tag and commit recorded in
 `scripts/webkit-ref.json`, with the large test suites excluded. The pin matches
 Cottontail's current SDK baseline and keeps unrelated upstream changes out of
-platform builds. Update the pin when an upstream upgrade passes all five targets.
+platform builds. Update the pin when an upstream upgrade passes all six targets.
 Every target also links the packaged embedder bridge into `tests/embedder-jit.cpp`
 to check callbacks, lazy bytecode and source lifetime after collection, exceptions,
 and concurrent contexts before publishing.
+Both macOS architectures build and execute natively, with Intel using
+`macos-26-intel`. JSC, its embedder, and the static ICU fallback target macOS 14.
+Before packaging, CI verifies every archive's architecture and deployment target
+and rejects executable dependencies outside Apple's system libraries.
 Set the `webkit_ref` manual-workflow input to another exact tag to test an upgrade,
 or to `latest` to select the newest tag by upstream commit date using the
 workflow's built-in `GITHUB_TOKEN`. No custom GitHub token is required.

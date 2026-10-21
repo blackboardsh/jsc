@@ -17,6 +17,7 @@ const publicBaseUrl = (process.env.JSC_R2_PUBLIC_BASE_URL ?? 'https://preview.in
 const expectedDataSha256 = '672dafc4940a0183cb48c3e369c1a0795cc8dfbf19951c86ced0ad78398f9480';
 const matrix = {
   'macos-arm64': 'cottontail-jsc-macos-arm64',
+  'macos-x64': 'cottontail-jsc-macos-amd64',
   'linux-x64': 'cottontail-jsc-linux-amd64',
   'linux-arm64': 'cottontail-jsc-linux-arm64',
   'windows-x64': 'cottontail-jsc-windows-amd64',
